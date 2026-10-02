@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "release": "1.4.5",
+  "publishedAt": "2026-10-02T09:28:30Z",
+  "gitRevision": "fc95e59fbbeb2db3a15d927b74222ab1a3cb3430",
+  "images": {
+    "server": "approxx/kubedok-server@sha256:fef59bfbb8b9465c8dd0542536bfb844286537f70d10128627be5c9d68589f2b",
+    "nginx": "approxx/kubedok-nginx@sha256:2c255627bd5902d13936868cb34cc463c9103947e5bf40e7cd2fa09c042d49f0",
+    "postgres": "approxx/kubedok-postgres@sha256:c1589b60d50e67cd50cfc53f78eab1aa02cd618585ebed952fce3483f8571dd2",
+    "agent": "approxx/kubedok-agent@sha256:809e4e603c6dd1744f26cfe29336166c3c78ca6494fd77fe5141934ee80932ff"
+  },
+  "postgresMajor": 16,
+  "minimumAgentVersion": "1.0.0",
+  "minimumUpgradeFrom": "1.4.0",
+  "notes": "https://github.com/glikaj/kubedok/releases/tag/v1.4.5"
+}
