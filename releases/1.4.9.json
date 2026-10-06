@@ -10,7 +10,7 @@
     "agent": "approxx/kubedok-agent@sha256:80b46838bb6c64d7403066f2a3a82902a53e5967e05ceda83cf5e591d682a348"
   },
   "postgresMajor": 16,
-  "minimumAgentVersion": "1.0.0",
-  "minimumUpgradeFrom": "1.4.0",
+  "minimumAgentVersion": "1.4.9",
+  "minimumUpgradeFrom": "1.4.9",
   "notes": "https://github.com/glikaj/kubedok/releases/tag/v1.4.9"
 }
