@@ -11,7 +11,8 @@
 #
 # Order of operations is deliberate: back up before pulling, update the server
 # before nginx, and only record the new release as current once it has served
-# real traffic through the proxy. `current` moving is the commit point.
+# real traffic through the proxy. `current` moving is the commit point. A run
+# that fails before it leaves releases/ and `previous` exactly as they were.
 #
 # Rollback caveat: rolling an image back does NOT roll back a database
 # migration. See https://github.com/glikaj/kubedok/blob/main/docs/release-process.md
@@ -38,7 +39,7 @@ TARGET_REF=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --check) CHECK_ONLY=true; shift ;;
-    -h|--help) sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) die "Unknown option: $1" ;;
     *) TARGET_REF="$1"; shift ;;
   esac
@@ -54,6 +55,17 @@ TARGET_REF="${TARGET_REF:-${KUBEDOK_RELEASE:-stable}}"
 # ── 1. Lock ──────────────────────────────────────────────────────────────────
 acquire_lock 600
 
+# However the run ends, it leaves no staged tree or temporary file behind. Set
+# only once the lock is held, so the staging area is this run's alone; it also
+# clears whatever a run killed outright (SIGKILL, power loss) left in it.
+NEW_MANIFEST_TMP=""
+PREVIOUS_COMPOSE_ENV=""
+discard_leftovers() {
+  rm -rf "${KUBEDOK_STAGING_DIR:?}" 2>/dev/null || true
+  rm -f "${NEW_MANIFEST_TMP}" "${PREVIOUS_COMPOSE_ENV}" 2>/dev/null || true
+}
+trap discard_leftovers EXIT
+
 # ── 2. Current release ───────────────────────────────────────────────────────
 CURRENT_VERSION="$(current_release || true)"
 [ -n "${CURRENT_VERSION}" ] || die "No current release is recorded. Is this a complete install?"
@@ -68,7 +80,6 @@ NEW_VERSION="$(manifest_field release "${NEW_MANIFEST_TMP}")"
 
 if [ "${NEW_VERSION}" = "${CURRENT_VERSION}" ]; then
   ok "Already on ${CURRENT_VERSION}. Nothing to do."
-  rm -f "${NEW_MANIFEST_TMP}"
   exit 0
 fi
 
@@ -109,7 +120,6 @@ if [ "${CHECK_ONLY}" = "true" ]; then
   printf '  Available : %s  (published %s)\n' "${NEW_VERSION}" "$(manifest_field publishedAt "${NEW_MANIFEST_TMP}")"
   printf '  Notes     : %s\n' "$(jq -r '.notes // "—"' "${NEW_MANIFEST_TMP}")"
   printf '\n  Run without --check to apply.\n\n'
-  rm -f "${NEW_MANIFEST_TMP}"
   exit 0
 fi
 
@@ -137,31 +147,39 @@ else
 fi
 
 # ── Stage the new release tree ───────────────────────────────────────────────
+# Built outside releases/: until the commit, nothing that lists releases
+# (rollback.sh, the pruning below) can see it, and a tree already on disk for
+# this version, kept from an earlier install of it, stays untouched. A failed
+# run discards it on the way out; the commit moves it into releases/.
 NEW_RELEASE_DIR="${KUBEDOK_RELEASES_DIR}/${NEW_VERSION}"
-log "Staging ${NEW_RELEASE_DIR}"
-mkdir -p "${NEW_RELEASE_DIR}/compose" "${NEW_RELEASE_DIR}/scripts"
-mv "${NEW_MANIFEST_TMP}" "${NEW_RELEASE_DIR}/release.json"
-chmod 644 "${NEW_RELEASE_DIR}/release.json"
+STAGED_DIR="${KUBEDOK_STAGING_DIR}/${NEW_VERSION}"
+log "Staging ${NEW_VERSION}"
+rm -rf "${KUBEDOK_STAGING_DIR:?}"
+mkdir -p "${STAGED_DIR}/compose" "${STAGED_DIR}/scripts"
+mv "${NEW_MANIFEST_TMP}" "${STAGED_DIR}/release.json"
+chmod 644 "${STAGED_DIR}/release.json"
 
+# Every file is required, scripts included: a tree without cert-renew.sh
+# stops renewing its certificate, one without backup.sh refuses the next
+# update. fetch_url exits on a failure, and the staged tree goes with it.
 for file in postgres.yml postgres.public.yml server.yml nginx.yml agent.yml; do
-  fetch_url "${KUBEDOK_RELEASE_BASE_URL}/compose/${file}" "${NEW_RELEASE_DIR}/compose/${file}"
+  fetch_url "${KUBEDOK_RELEASE_BASE_URL}/compose/${file}" "${STAGED_DIR}/compose/${file}"
 done
 for file in common.sh doctor.sh backup.sh restore.sh status.sh logs.sh restart.sh \
             rollback.sh agent-install.sh agent-update.sh cert-renew.sh uninstall.sh \
             migrate-from-monolith.sh; do
-  if fetch_url "${KUBEDOK_RELEASE_BASE_URL}/scripts/${file}" "${NEW_RELEASE_DIR}/scripts/${file}" 2>/dev/null; then
-    chmod 755 "${NEW_RELEASE_DIR}/scripts/${file}"
-  fi
+  fetch_url "${KUBEDOK_RELEASE_BASE_URL}/scripts/${file}" "${STAGED_DIR}/scripts/${file}"
+  chmod 755 "${STAGED_DIR}/scripts/${file}"
 done
 # The updater is published at the repository root and installed beside
 # common.sh, so the next update runs the copy that came with this release.
-fetch_url "${KUBEDOK_RELEASE_BASE_URL}/update.sh" "${NEW_RELEASE_DIR}/scripts/update.sh"
-chmod 755 "${NEW_RELEASE_DIR}/scripts/update.sh"
+fetch_url "${KUBEDOK_RELEASE_BASE_URL}/update.sh" "${STAGED_DIR}/scripts/update.sh"
+chmod 755 "${STAGED_DIR}/scripts/update.sh"
 ok "Release tree staged"
 
 # Drive the staged compose files while `current` still points at the old
 # release, so a failure leaves a consistent install behind.
-export KUBEDOK_COMPOSE_DIR="${NEW_RELEASE_DIR}/compose"
+export KUBEDOK_COMPOSE_DIR="${STAGED_DIR}/compose"
 
 PREVIOUS_COMPOSE_ENV="$(mktemp)"
 cp "$(compose_env_file)" "${PREVIOUS_COMPOSE_ENV}"
@@ -181,17 +199,17 @@ restore_previous() {
 # ── 6. Pull exact digests ────────────────────────────────────────────────────
 log "Pulling ${NEW_VERSION} images"
 for component in postgres server nginx; do
-  ref="$(manifest_image "${component}" "${NEW_RELEASE_DIR}/release.json")"
+  ref="$(manifest_image "${component}" "${STAGED_DIR}/release.json")"
   docker pull -q "${ref}" >/dev/null || die "Could not pull ${component}: ${ref}. Nothing has changed yet."
   ok "Pulled ${component}"
 done
 
-write_compose_env "${NEW_RELEASE_DIR}/release.json" >/dev/null
+write_compose_env "${STAGED_DIR}/release.json" >/dev/null
 
 # PostgreSQL only restarts when its digest actually changed, so a routine
 # application update does not bounce the database.
 CURRENT_PG_IMAGE="$(jq -r '.images.postgres' "${CURRENT_MANIFEST}" 2>/dev/null || echo "")"
-NEW_PG_IMAGE="$(manifest_image postgres "${NEW_RELEASE_DIR}/release.json")"
+NEW_PG_IMAGE="$(manifest_image postgres "${STAGED_DIR}/release.json")"
 if [ "${CURRENT_PG_IMAGE}" != "${NEW_PG_IMAGE}" ]; then
   log "PostgreSQL image changed — restarting the database"
   compose postgres up -d || restore_previous
@@ -249,14 +267,25 @@ fi
 ok "  database is connected"
 
 # ── 11. Commit ───────────────────────────────────────────────────────────────
+# The staged tree takes its place in releases/, replacing one already there
+# for this version; the replaced one is set aside in the staging area, which
+# goes on exit. Then `previous` moves before `current`: an interruption between
+# the two leaves rollback.sh nothing to do, rather than a target one release
+# further back than the operator expects.
+if [ -e "${NEW_RELEASE_DIR}" ]; then
+  mv "${NEW_RELEASE_DIR}" "${KUBEDOK_STAGING_DIR}/replaced-${NEW_VERSION}"
+fi
+mv "${STAGED_DIR}" "${NEW_RELEASE_DIR}"
+# compose.env names the manifest it was generated from: name the one that stays.
+write_compose_env "${NEW_RELEASE_DIR}/release.json" >/dev/null
+set_previous_release "${CURRENT_VERSION}"
 set_current_release "${NEW_VERSION}"
 set_config KUBEDOK_RELEASE "${TARGET_REF}"
-rm -f "${PREVIOUS_COMPOSE_ENV}"
 ok "Recorded ${NEW_VERSION} as current"
 
 # ── 12. Keep the previous release for rollback, prune older ones ─────────────
 KEEP="${KUBEDOK_KEEP_RELEASES:-3}"
-mapfile -t all_releases < <(find "${KUBEDOK_RELEASES_DIR}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' | sort -V)
+mapfile -t all_releases < <(list_releases)
 if [ "${#all_releases[@]}" -gt "${KEEP}" ]; then
   prune_count=$(( ${#all_releases[@]} - KEEP ))
   for old in "${all_releases[@]:0:${prune_count}}"; do
@@ -270,7 +299,7 @@ fi
 printf '\n'
 ok "Updated ${CURRENT_VERSION} → ${NEW_VERSION}"
 printf '\n'
-printf '  Rollback     %s/scripts/rollback.sh\n' "${KUBEDOK_CURRENT_LINK}"
+printf '  Rollback     %s/scripts/rollback.sh  (back to %s)\n' "${KUBEDOK_CURRENT_LINK}" "${CURRENT_VERSION}"
 printf '  Backup taken %s\n' "${BACKUP_PATH}"
 printf '  Status       %s/scripts/status.sh\n' "${KUBEDOK_CURRENT_LINK}"
 printf '\n'

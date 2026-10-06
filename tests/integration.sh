@@ -5,8 +5,8 @@
 #   tests/integration.sh
 #
 # Exercises the real scripts against a real Docker daemon: install, backup,
-# update, rollback, restore, uninstall, plus the guards that are supposed to
-# refuse unsafe operations.
+# update, failed updates, rollback, restore, uninstall, plus the guards that
+# are supposed to refuse unsafe operations.
 #
 # How it works
 # ------------
@@ -30,6 +30,8 @@ SERVE_DIR="${WORK}/serve"
 REG_NAME="kubedok-test-registry"
 REG_PORT="${KUBEDOK_TEST_REGISTRY_PORT:-5050}"
 RUNNER="kubedok-test-runner"
+# Built by TEST 6: the dev server image, reporting a release it is not.
+WRONG_RELEASE_IMAGE="kubedok-test-wrong-release:latest"
 HTTP_PORT="${KUBEDOK_TEST_HTTP_PORT:-18080}"
 
 PASS=0
@@ -65,11 +67,34 @@ assert_fails() {
   if "$@" >/dev/null 2>&1; then fails "${what} — the command unexpectedly succeeded"; else pass "${what}"; fi
 }
 
+# The install's release state, read inside the runner.
+installed_release() { inrun "readlink -f ${INSTALL_ROOT}/current | xargs basename" | tr -d '\r'; }
+previous_link()     { inrun "readlink ${INSTALL_ROOT}/previous | xargs -r basename" 2>/dev/null | tr -d '\r'; }
+# Every entry in releases/, hidden ones included, on one line.
+release_entries()   { inrun "ls -A1 ${INSTALL_ROOT}/releases | sort -V" | tr -d '\r' | xargs; }
+# One checksum over a release tree's paths, modes and contents.
+tree_sum() {
+  inrun "cd ${INSTALL_ROOT}/releases/$1 && { find . -printf '%y %m %p\n' | sort; \
+    find . -type f -print0 | sort -z | xargs -0 sha256sum; } | sha256sum" | tr -d '\r'
+}
+
+# What a failed update must leave: no staging area, and releases/, current
+# and previous exactly as they were before it.
+assert_update_left_nothing() {
+  local what="$1" releases="$2" current="$3" previous="$4"
+  assert_fails "${what}: no staging area is left" \
+    docker exec "${RUNNER}" test -e "${INSTALL_ROOT}/.staging"
+  assert_eq "${releases}" "$(release_entries)" "${what}: releases/ holds ${releases} and nothing else"
+  assert_eq "${current}" "$(installed_release)" "${what}: current still points at ${current}"
+  assert_eq "${previous}" "$(previous_link)" "${what}: previous still points at ${previous}"
+}
+
 # ── Teardown ─────────────────────────────────────────────────────────────────
 cleanup() {
   step 'Cleaning up'
   docker rm -f kubedok-nginx kubedok-server kubedok-postgres kubedok-agent >/dev/null 2>&1 || true
   docker rm -f "${RUNNER}" "${REG_NAME}" >/dev/null 2>&1 || true
+  docker image rm "${WRONG_RELEASE_IMAGE}" "localhost:${REG_PORT}/kubedok-server:1.0.4" >/dev/null 2>&1 || true
   docker volume rm kubedok_postgres_data >/dev/null 2>&1 || true
   docker network rm kubedok-proxy kubedok-postgres >/dev/null 2>&1 || true
   rm -rf "${WORK}" 2>/dev/null || true
@@ -292,6 +317,8 @@ fi
 
 assert_eq '1.0.0' "$(inrun "readlink -f ${INSTALL_ROOT}/current | xargs basename" | tr -d '\r')" \
   'current release symlink points at 1.0.0'
+assert_fails 'a fresh install records no previous release' \
+  docker exec "${RUNNER}" test -L "${INSTALL_ROOT}/previous"
 
 # The summary once named ${KUBEDOK_ROOT}/update.sh, which nothing installed.
 # Hold it to a path that exists.
@@ -393,6 +420,8 @@ version="$(inrun 'curl -fsS http://kubedok-nginx/api/version' 2>/dev/null | tr -
 assert_eq '1.0.1' "$(jq -r .release <<<"${version}" 2>/dev/null)" '/api/version reports 1.0.1'
 assert_ok '1.0.0 is retained on disk for rollback' \
   docker exec "${RUNNER}" test -f "${INSTALL_ROOT}/releases/1.0.0/release.json"
+assert_eq '1.0.0' "$(previous_link)" 'previous points at 1.0.0, the release the update replaced'
+assert_fails 'the update left no staging area' docker exec "${RUNNER}" test -e "${INSTALL_ROOT}/.staging"
 
 # The staged release must carry an updater too, or the next update has none.
 assert_eq '755' "$(inrun "stat -c %a ${INSTALL_ROOT}/releases/1.0.1/scripts/update.sh" 2>/dev/null | tr -d '\r')" \
@@ -440,7 +469,114 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════
-step 'TEST 6 — rollback.sh 1.0.1 → 1.0.0'
+step 'TEST 6 — a failed update leaves nothing behind'
+
+# Each of these fails after the backup, once staging has begun. The staged
+# tree used to stay in releases/, where rollback.sh took the highest version
+# that was not current for its target: the release that had just failed.
+# The installed updater runs them, as an operator would.
+zero_digest="sha256:$(printf '%064d' 0)"
+
+# An image that cannot be pulled: die before any container changes.
+jq --arg ref "localhost:${REG_PORT}/kubedok-server@${zero_digest}" \
+  '.release = "1.0.3" | .images.server = $ref' \
+  "${SERVE_DIR}/releases/1.0.1.json" > "${SERVE_DIR}/releases/1.0.3.json"
+if out="$(inrun "${UPDATER} 1.0.3" 2>&1)"; then
+  fails 'an update to an unpullable image unexpectedly succeeded'
+else
+  if grep -q 'Nothing has changed yet' <<<"${out}"; then
+    pass 'an unpullable image stops the update before anything changes'
+  else
+    fails 'an unpullable image did not stop the update at the pull'
+    printf '%s\n' "${out}" | tail -5 | sed 's/^/      /'
+  fi
+fi
+assert_update_left_nothing 'unpullable 1.0.3' '1.0.0 1.0.1' '1.0.1' '1.0.0'
+
+# A server that comes up healthy but reports another release: the update
+# swaps the containers, fails the smoke test through nginx, and has to put
+# 1.0.1's back. The entrypoint is the image's own, behind `env`.
+entrypoint="$(docker image inspect kubedok-server:dev --format '{{json .Config.Entrypoint}}' \
+  | jq -c '["env", "KUBEDOK_RELEASE_VERSION=0.0.0-not-1.0.4"] + .')"
+cid="$(docker create kubedok-server:dev)"
+docker commit --change "ENTRYPOINT ${entrypoint}" "${cid}" "${WRONG_RELEASE_IMAGE}" >/dev/null
+docker rm "${cid}" >/dev/null
+push_component server   "${WRONG_RELEASE_IMAGE}" 1.0.4
+push_component nginx    kubedok-nginx:dev        1.0.4
+push_component postgres kubedok-postgres:dev     1.0.4
+write_manifest 1.0.4 1.0.0
+if out="$(inrun "${UPDATER} 1.0.4" 2>&1)"; then
+  fails 'an update whose server reports the wrong release unexpectedly succeeded'
+else
+  if grep -q 'restoring 1.0.1' <<<"${out}"; then
+    pass 'a failed smoke test restores 1.0.1'
+  else
+    fails 'a failed smoke test did not restore 1.0.1'
+    printf '%s\n' "${out}" | tail -5 | sed 's/^/      /'
+  fi
+fi
+assert_eq "$(digest_of server 1.0.1)" "$(docker inspect -f '{{.Config.Image}}' kubedok-server 2>/dev/null)" \
+  "the server runs 1.0.1's image again"
+reported=''
+for _ in $(seq 1 60); do
+  reported="$(inrun 'curl -fsS http://kubedok-nginx/api/version' 2>/dev/null | tr -d '\r' \
+    | jq -r '.release // empty' 2>/dev/null || true)"
+  [ "${reported}" = '1.0.1' ] && break
+  sleep 2
+done
+assert_eq '1.0.1' "${reported}" '/api/version reports 1.0.1 again'
+assert_update_left_nothing 'smoke-tested 1.0.4' '1.0.0 1.0.1' '1.0.1' '1.0.0'
+
+# A release that is already on disk, kept for rollback, must come out of a
+# failed update to it exactly as it went in. Its manifest is swapped for one
+# that cannot be pulled, so staging it would have overwritten release.json.
+sum_before="$(tree_sum 1.0.0)"
+cp "${SERVE_DIR}/releases/1.0.0.json" "${WORK}/1.0.0.json.published"
+jq --arg ref "localhost:${REG_PORT}/kubedok-server@${zero_digest}" '.images.server = $ref' \
+  "${WORK}/1.0.0.json.published" > "${SERVE_DIR}/releases/1.0.0.json"
+if inrun "${UPDATER} 1.0.0" >/dev/null 2>&1; then
+  fails 'the update to an unpullable 1.0.0 unexpectedly succeeded'
+else
+  pass 'an update to 1.0.0, already on disk, fails at the pull'
+fi
+mv "${WORK}/1.0.0.json.published" "${SERVE_DIR}/releases/1.0.0.json"
+assert_eq "${sum_before}" "$(tree_sum 1.0.0)" 'the 1.0.0 tree on disk is exactly as it was'
+assert_update_left_nothing 're-staged 1.0.0' '1.0.0 1.0.1' '1.0.1' '1.0.0'
+
+# Every file of the tree is required: one the source does not serve stops
+# the update, and says which. The "optional" fetches used to exit the script
+# anyway, with their error sent to /dev/null.
+jq '.release = "1.0.5"' "${SERVE_DIR}/releases/1.0.1.json" > "${SERVE_DIR}/releases/1.0.5.json"
+mv "${SERVE_DIR}/scripts/restore.sh" "${WORK}/restore.sh.hidden"
+if out="$(inrun "${UPDATER} 1.0.5" 2>&1)"; then
+  fails 'an update missing restore.sh unexpectedly succeeded'
+else
+  if grep -q 'Could not download .*/scripts/restore.sh' <<<"${out}"; then
+    pass 'a file that cannot be fetched stops the update, by name'
+  else
+    fails 'a file that cannot be fetched did not stop the update with its name'
+    printf '%s\n' "${out}" | tail -5 | sed 's/^/      /'
+  fi
+fi
+mv "${WORK}/restore.sh.hidden" "${SERVE_DIR}/scripts/restore.sh"
+assert_update_left_nothing 'unfetchable 1.0.5' '1.0.0 1.0.1' '1.0.1' '1.0.0'
+
+listing="$(inrun "${INSTALL_ROOT}/current/scripts/rollback.sh --list" | tr -d '\r' || true)"
+assert_eq '1.0.0 1.0.1' "$(awk '{print $1}' <<<"${listing}" | xargs)" 'rollback.sh --list shows 1.0.0 and 1.0.1'
+assert_eq '1.0.1' "$(awk '$2 == "current" {print $1}' <<<"${listing}")" 'rollback.sh --list marks 1.0.1 current'
+assert_eq '1.0.0' "$(awk '$2 == "previous" {print $1}' <<<"${listing}")" 'rollback.sh --list marks 1.0.0 previous'
+
+# Answering no at the prompt shows the default target without rolling back.
+out="$(inrun "echo n | ${INSTALL_ROOT}/current/scripts/rollback.sh" 2>&1 || true)"
+if grep -q 'Rolling back  1.0.1 → 1.0.0' <<<"${out}"; then
+  pass 'rollback.sh with no version still targets 1.0.0'
+else
+  fails 'rollback.sh with no version does not target 1.0.0'
+  printf '%s\n' "${out}" | grep 'Rolling back' | sed 's/^/      /'
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════
+step 'TEST 7 — rollback.sh 1.0.1 → 1.0.0'
 
 if inrun "${INSTALL_ROOT}/current/scripts/rollback.sh --yes" > "${WORK}/rollback.log" 2>&1; then
   pass 'rollback.sh completed'
@@ -453,8 +589,24 @@ assert_eq '1.0.0' "$(inrun "readlink -f ${INSTALL_ROOT}/current | xargs basename
 version="$(inrun 'curl -fsS http://kubedok-nginx/api/version' 2>/dev/null | tr -d '\r')"
 assert_eq '1.0.0' "$(jq -r .release <<<"${version}" 2>/dev/null)" '/api/version reports 1.0.0 again'
 
+# The rollback used the record up. 1.0.1 is still on disk and is the highest
+# release that is not current, which is where a second rollback used to go:
+# forward, to the release just rolled back from.
+assert_fails 'the rollback cleared previous' docker exec "${RUNNER}" test -L "${INSTALL_ROOT}/previous"
+listing="$(inrun "${INSTALL_ROOT}/current/scripts/rollback.sh --list" | tr -d '\r' || true)"
+assert_eq '1.0.0  current|1.0.1' "$(paste -sd'|' - <<<"${listing}")" \
+  'rollback.sh --list marks 1.0.0 current and nothing previous'
+out="$(inrun "${INSTALL_ROOT}/current/scripts/rollback.sh --yes" 2>&1 || true)"
+if grep -q 'No previous release is recorded' <<<"${out}"; then
+  pass 'a second rollback.sh refuses instead of rolling forward'
+else
+  fails 'a second rollback.sh did not refuse'
+  printf '%s\n' "${out}" | tail -5 | sed 's/^/      /'
+fi
+assert_eq '1.0.0' "$(installed_release)" 'the refused rollback left the install on 1.0.0'
+
 # ═══════════════════════════════════════════════════════════════════════════
-step 'TEST 7 — restore.sh'
+step 'TEST 8 — restore.sh'
 
 # Write a marker row, then restore a backup taken before it existed: the row
 # must be gone afterwards, which proves the restore really replaced the data.
@@ -481,7 +633,7 @@ health="$(inrun 'curl -fsS http://kubedok-nginx/api/health' 2>/dev/null | tr -d 
 assert_eq 'connected' "$(jq -r .database <<<"${health}" 2>/dev/null)" 'the API is healthy after the restore'
 
 # ═══════════════════════════════════════════════════════════════════════════
-step 'TEST 8 — status.sh and doctor.sh'
+step 'TEST 9 — status.sh and doctor.sh'
 
 assert_ok 'status.sh runs' docker exec "${RUNNER}" "${INSTALL_ROOT}/current/scripts/status.sh"
 
@@ -503,7 +655,7 @@ for expected in 'Current release' 'Secret: jwt-secret' 'Network isolation'; do
 done
 
 # ═══════════════════════════════════════════════════════════════════════════
-step 'TEST 9 — uninstall.sh keeps data by default'
+step 'TEST 10 — uninstall.sh keeps data by default'
 
 if inrun "${INSTALL_ROOT}/current/scripts/uninstall.sh --yes" > "${WORK}/uninstall.log" 2>&1; then
   pass 'uninstall.sh completed'

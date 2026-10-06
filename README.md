@@ -76,7 +76,9 @@ sudo /opt/kubedok/current/scripts/rollback.sh        # undo an update
 
 Each release installs its own copy of the scripts, `update.sh` included, in
 `/opt/kubedok/releases/<version>/scripts/`, and `current` points at the release
-that is running.
+that is running. After an update, `previous` points at the release it
+replaced, which is where `rollback.sh` goes when it is not given a version;
+`rollback.sh --list` shows what is on disk.
 
 ## Install an agent
 
@@ -158,10 +160,14 @@ Two servers installing "1.2.3" a month apart get identical bytes.
 **The manifest is a promise.** CI publishes it only after all four images
 have been pushed and each digest has been verified pullable.
 
-**`current` is the commit point.** `update.sh` stages the new release tree,
-updates the server, waits for health, updates nginx, and smoke-tests through
-the proxy. Only then does the `current` symlink move. Any failure before that
-restores the previous containers.
+**`current` is the commit point.** `update.sh` stages the new release tree
+outside `releases/`, updates the server, waits for health, updates nginx, and
+smoke-tests through the proxy. Only then does the tree move into `releases/`,
+`previous` move to the release being replaced, and the `current` symlink move.
+A failure before that leaves the previous containers running, or puts them
+back, and discards the staged tree, so `releases/` only ever holds releases
+that installed and `rollback.sh` never goes to one that failed. A rollback
+clears `previous`, so a second one does not roll forward again.
 
 **Secrets are generated once, on the host.** Containers never generate one.
 Losing `jwt-secret` logs everyone out; losing `registry-encryption-key` makes

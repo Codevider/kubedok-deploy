@@ -2,8 +2,13 @@
 #
 # Roll the server and nginx back to the previously installed release.
 #
-#   rollback.sh            # to the previous release
+#   rollback.sh            # undo the last update: back to the release it replaced
 #   rollback.sh 1.2.0      # to a specific release still on disk
+#   rollback.sh --list     # the releases on disk, current and previous marked
+#
+# With no version, the target is `previous`, which update.sh records as it
+# commits. A rollback clears it, so a second rollback never rolls forward to
+# the release the first one left; name a version, or update, to move on.
 #
 # This rolls back CONTAINERS ONLY. Database migrations applied by the newer
 # release are NOT reverted — that is why migrations must be expand/contract
@@ -22,9 +27,19 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --yes|-y) ASSUME_YES=true; shift ;;
     --list)
-      find "${KUBEDOK_RELEASES_DIR}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' | sort -V
+      cur="$(current_release 2>/dev/null || true)"
+      prev="$(previous_release 2>/dev/null || true)"
+      list_releases | while read -r rel; do
+        if [ "${rel}" = "${cur}" ]; then
+          printf '%s  current\n' "${rel}"
+        elif [ "${rel}" = "${prev}" ]; then
+          printf '%s  previous (rollback.sh with no version goes back to it)\n' "${rel}"
+        else
+          printf '%s\n' "${rel}"
+        fi
+      done
       exit 0 ;;
-    -h|--help) sed -n '2,13p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) die "Unknown option: $1" ;;
     *) TARGET="$1"; shift ;;
   esac
@@ -39,13 +54,15 @@ acquire_lock 300
 CURRENT_VERSION="$(current_release || true)"
 [ -n "${CURRENT_VERSION}" ] || die "No current release recorded."
 
-TARGET="${TARGET:-$(previous_release)}"
-[ -n "${TARGET}" ] || die "No previous release is available on disk. List what is kept with --list."
+if [ -z "${TARGET}" ]; then
+  TARGET="$(previous_release || true)"
+  [ -n "${TARGET}" ] || die "No previous release is recorded. update.sh records the release it replaces, and a rollback clears that record. To go to a release on disk, name it: ${SCRIPT_DIR}/rollback.sh <version> (--list shows them)."
+fi
 [ "${TARGET}" != "${CURRENT_VERSION}" ] || die "${TARGET} is already the current release."
 
 TARGET_DIR="${KUBEDOK_RELEASES_DIR}/${TARGET}"
 [ -f "${TARGET_DIR}/release.json" ] \
-  || die "Release ${TARGET} is not on disk (looked for ${TARGET_DIR}/release.json). Available: $(find "${KUBEDOK_RELEASES_DIR}" -maxdepth 1 -mindepth 1 -type d -printf '%f ' 2>/dev/null)"
+  || die "Release ${TARGET} is not on disk (looked for ${TARGET_DIR}/release.json). Available: $(list_releases | tr '\n' ' ')"
 
 printf '\n'
 printf '  Rolling back  %s → %s\n' "${CURRENT_VERSION}" "${TARGET}"
@@ -91,5 +108,6 @@ if ! wait_for_http "$(local_base_url)/api/health" 90; then
 fi
 
 set_current_release "${TARGET}"
+clear_previous_release
 ok "Rolled back to ${TARGET}"
 printf '\n  Backup of the pre-rollback state: %s\n\n' "${BACKUP_PATH}"

@@ -80,7 +80,7 @@ if command -v systemctl >/dev/null 2>&1; then
 fi
 
 log "Removing release tree"
-rm -rf "${KUBEDOK_RELEASES_DIR}" "${KUBEDOK_CURRENT_LINK}"
+rm -rf "${KUBEDOK_RELEASES_DIR}" "${KUBEDOK_CURRENT_LINK}" "${KUBEDOK_PREVIOUS_LINK}" "${KUBEDOK_STAGING_DIR}"
 ok "Release tree removed"
 
 if [ "${PURGE_DATA}" = "true" ]; then

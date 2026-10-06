@@ -12,6 +12,10 @@ KUBEDOK_ROOT="${KUBEDOK_ROOT:-/opt/kubedok}"
 
 KUBEDOK_RELEASES_DIR="${KUBEDOK_ROOT}/releases"
 KUBEDOK_CURRENT_LINK="${KUBEDOK_ROOT}/current"
+KUBEDOK_PREVIOUS_LINK="${KUBEDOK_ROOT}/previous"
+# Where update.sh builds a release tree before it is known to work. Outside
+# releases/, so nothing that lists releases ever sees a half-made one.
+KUBEDOK_STAGING_DIR="${KUBEDOK_ROOT}/.staging"
 KUBEDOK_CONFIG_DIR="${KUBEDOK_ROOT}/config"
 KUBEDOK_CONFIG_FILE="${KUBEDOK_CONFIG_DIR}/kubedok.env"
 KUBEDOK_SECRETS_DIR="${KUBEDOK_ROOT}/secrets"
@@ -230,6 +234,11 @@ validate_manifest() {
       || die "Release manifest is missing required field: ${field}"
   done
 
+  # The release names a directory under releases/, so hold it to the schema.
+  local release
+  release="$(jq -r '.release' "${file}")"
+  is_semver "${release}" || die "Release manifest's release is not a version (X.Y.Z): ${release}"
+
   local component ref
   for component in server nginx postgres agent; do
     ref="$(jq -r --arg c "${component}" '.images[$c] // empty' "${file}")"
@@ -257,23 +266,35 @@ current_manifest() {
   printf '%s/%s/release.json' "${KUBEDOK_RELEASES_DIR}" "${rel}"
 }
 
-# Atomic symlink swap, so `current` is never briefly missing.
-set_current_release() {
-  local version="$1"
+# Atomic symlink swap, so the link is never briefly missing.
+point_link_at_release() {
+  local link="$1" version="$2"
   local target="${KUBEDOK_RELEASES_DIR}/${version}"
   [ -d "${target}" ] || die "Release directory does not exist: ${target}"
-  ln -sfn "${target}" "${KUBEDOK_CURRENT_LINK}.tmp"
-  mv -Tf "${KUBEDOK_CURRENT_LINK}.tmp" "${KUBEDOK_CURRENT_LINK}"
+  ln -sfn "${target}" "${link}.tmp"
+  mv -Tf "${link}.tmp" "${link}"
 }
 
+set_current_release() { point_link_at_release "${KUBEDOK_CURRENT_LINK}" "$1"; }
+
+# The release that was current before the last successful update: where
+# rollback.sh goes when it is not given a version. update.sh records it as it
+# commits and a rollback clears it, so it never names a release that failed
+# to install, or the one a rollback just left.
 previous_release() {
-  # Most recent release directory that is not the current one.
-  local cur
-  cur="$(current_release 2>/dev/null || true)"
+  [ -L "${KUBEDOK_PREVIOUS_LINK}" ] || return 1
+  basename "$(readlink "${KUBEDOK_PREVIOUS_LINK}")"
+}
+
+set_previous_release() { point_link_at_release "${KUBEDOK_PREVIOUS_LINK}" "$1"; }
+clear_previous_release() { rm -f "${KUBEDOK_PREVIOUS_LINK}"; }
+
+# Release trees on disk, oldest first. Only X.Y.Z directories are releases.
+list_releases() {
   find "${KUBEDOK_RELEASES_DIR}" -maxdepth 1 -mindepth 1 -type d -printf '%f\n' 2>/dev/null \
-    | grep -v "^${cur}$" \
+    | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' \
     | sort -V \
-    | tail -n1
+    || true
 }
 
 # ── Docker networks ──────────────────────────────────────────────────────────
