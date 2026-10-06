@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "channel": "stable",
-  "release": "1.4.8",
-  "manifest": "releases/1.4.8.json",
-  "updatedAt": "2026-10-06T08:22:30Z"
+  "release": "1.4.9",
+  "manifest": "releases/1.4.9.json",
+  "updatedAt": "2026-10-06T14:55:55Z"
 }
