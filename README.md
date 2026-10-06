@@ -65,14 +65,18 @@ instead, are in
 Everything installs under `/opt/kubedok`.
 
 ```bash
-sudo /opt/kubedok/update.sh --check                  # is there an update?
-sudo /opt/kubedok/update.sh                          # apply it
+sudo /opt/kubedok/current/scripts/update.sh --check  # is there an update?
+sudo /opt/kubedok/current/scripts/update.sh          # apply it
 sudo /opt/kubedok/current/scripts/status.sh          # what is running
 sudo /opt/kubedok/current/scripts/doctor.sh          # diagnose a problem
 sudo /opt/kubedok/current/scripts/logs.sh server     # logs
 sudo /opt/kubedok/current/scripts/backup.sh          # back up
 sudo /opt/kubedok/current/scripts/rollback.sh        # undo an update
 ```
+
+Each release installs its own copy of the scripts, `update.sh` included, in
+`/opt/kubedok/releases/<version>/scripts/`, and `current` points at the release
+that is running.
 
 ## Install an agent
 
@@ -163,6 +167,24 @@ restores the previous containers.
 Losing `jwt-secret` logs everyone out; losing `registry-encryption-key` makes
 stored registry credentials and certificates permanently undecryptable, so
 `backup.sh` includes them and `restore.sh` puts them back.
+
+**The server sees the install, read-only.** `server.yml` mounts the install
+root into the server at the same path, read-only, for Server → Maintenance in
+the UI: it lists every file of the install and reads `config/kubedok.env`, the
+current `release.json`, the web app's certificate and certbot's renewal
+settings for it. Of everything else, secrets and backups included, it reads
+only names, sizes and dates. The server already holds the three secrets and
+the live database. The mount gives the container read access to more, none of
+which it opens: the TLS private keys, current and archived; certbot's account
+key; `compose.env`, which carries an agent's registration token while one is
+being installed; and the backups, which hold earlier database dumps and
+secrets. It is read-only because the server runs as root and the scripts in
+the root run as root on the host: a writable mount would turn a compromised
+server into root on the host. A filesystem mounted separately under the root,
+such as `backups/` on its own disk, is read-only inside the container only
+where Docker makes read-only binds recursive (Engine 25 and later, kernel 5.12
+and later). Files outside the root (the renewal timer's systemd units, an
+agent's `/opt/kubedok-agent`) stay out of its view.
 
 **Rollback is not a database rollback.** Rolling an image back does not revert
 a migration. Migrations are expand/contract, and a destructive change never

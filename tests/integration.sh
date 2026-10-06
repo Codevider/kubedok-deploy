@@ -293,6 +293,14 @@ fi
 assert_eq '1.0.0' "$(inrun "readlink -f ${INSTALL_ROOT}/current | xargs basename" | tr -d '\r')" \
   'current release symlink points at 1.0.0'
 
+# The summary once named ${KUBEDOK_ROOT}/update.sh, which nothing installed.
+# Hold it to a path that exists.
+UPDATER="${INSTALL_ROOT}/current/scripts/update.sh"
+assert_eq "${UPDATER}" "$(sed -n 's/^  Update  *//p' "${WORK}/setup.log" | tr -d '\r' | head -1)" \
+  'the setup summary names current/scripts/update.sh as the updater'
+assert_eq '755' "$(inrun "stat -c %a ${UPDATER}" 2>/dev/null | tr -d '\r')" \
+  'the installed update.sh is mode 755'
+
 for s in postgres-password jwt-secret registry-encryption-key; do
   mode="$(inrun "stat -c %a ${INSTALL_ROOT}/secrets/${s}" 2>/dev/null | tr -d '\r')"
   assert_eq '600' "${mode}" "secret ${s} is mode 600"
@@ -358,12 +366,24 @@ for entry in ./database.sql ./backup.json ./secrets/jwt-secret ./secrets/registr
 done
 
 # ═══════════════════════════════════════════════════════════════════════════
-step 'TEST 4 — update.sh 1.0.0 → 1.0.1'
+step 'TEST 4 — update.sh 1.0.0 → 1.0.1, from the install'
 
-if inrun "${SERVE_DIR}/update.sh 1.0.1" > "${WORK}/update.log" 2>&1; then
-  pass 'update.sh completed'
+# Operators run the copy in the release tree, not the clone, which they may
+# have deleted. It has to find common.sh beside itself.
+out="$(inrun "${UPDATER} --check 1.0.1" 2>&1 || true)"
+if grep -q 'Available : 1.0.1' <<<"${out}"; then
+  pass 'the installed update.sh --check reports 1.0.1'
 else
-  fails 'update.sh failed'
+  fails 'the installed update.sh --check did not report 1.0.1'
+  printf '%s\n' "${out}" | tail -5 | sed 's/^/      /'
+fi
+assert_eq '1.0.0' "$(inrun "readlink -f ${INSTALL_ROOT}/current | xargs basename" | tr -d '\r')" \
+  'update.sh --check left the install on 1.0.0'
+
+if inrun "${UPDATER} 1.0.1" > "${WORK}/update.log" 2>&1; then
+  pass 'the installed update.sh completed'
+else
+  fails 'the installed update.sh failed'
   tail -40 "${WORK}/update.log" | sed 's/^/      /'
 fi
 
@@ -374,18 +394,27 @@ assert_eq '1.0.1' "$(jq -r .release <<<"${version}" 2>/dev/null)" '/api/version 
 assert_ok '1.0.0 is retained on disk for rollback' \
   docker exec "${RUNNER}" test -f "${INSTALL_ROOT}/releases/1.0.0/release.json"
 
+# The staged release must carry an updater too, or the next update has none.
+assert_eq '755' "$(inrun "stat -c %a ${INSTALL_ROOT}/releases/1.0.1/scripts/update.sh" 2>/dev/null | tr -d '\r')" \
+  'the 1.0.1 release tree carries update.sh, mode 755'
+assert_ok "1.0.1's update.sh is the published one" \
+  docker exec "${RUNNER}" cmp -s "${SERVE_DIR}/update.sh" "${INSTALL_ROOT}/releases/1.0.1/scripts/update.sh"
+
 jwt_after_update="$(inrun "cat ${INSTALL_ROOT}/secrets/jwt-secret" | tr -d '\r\n')"
 assert_eq "${jwt_before}" "${jwt_after_update}" 'the update did not rotate jwt-secret'
 
 # ═══════════════════════════════════════════════════════════════════════════
 step 'TEST 5 — update guards'
 
-if inrun "${SERVE_DIR}/update.sh 1.0.1" 2>&1 | grep -q 'Already on 1.0.1'; then
-  pass 'a no-op update is detected'
+# current is 1.0.1 now, so this runs the copy the update staged.
+if inrun "${UPDATER} 1.0.1" 2>&1 | grep -q 'Already on 1.0.1'; then
+  pass 'a no-op update is detected by the staged update.sh'
 else
   fails 'updating to the installed version was not detected as a no-op'
 fi
 
+# The rest run the repository-root copy, with common.sh under scripts/, so
+# running update.sh from a clone stays covered.
 # A PostgreSQL major bump must never be applied by a routine update.
 out="$(inrun "${SERVE_DIR}/update.sh 2.0.0" 2>&1 || true)"
 if grep -q 'major-version upgrade' <<<"${out}"; then

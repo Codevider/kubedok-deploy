@@ -7,6 +7,11 @@
 # There is no depends_on here: PostgreSQL lives in a different Compose project,
 # so ordering is enforced by setup.sh/update.sh and, defensively, by the
 # container's own readiness wait.
+#
+# The install root is mounted read-only at the path it has on the host, so
+# Server → Maintenance can list the install's files and read its settings,
+# release manifest and the web app's certificate, with paths that are the
+# host's own. Nothing is written through it.
 
 name: kubedok-server
 
@@ -30,6 +35,12 @@ services:
       KUBEDOK_RELEASE_VERSION: ${KUBEDOK_RELEASE_VERSION:-dev}
       KUBEDOK_GIT_REVISION: ${KUBEDOK_GIT_REVISION:-}
       KUBEDOK_MINIMUM_AGENT_VERSION: ${KUBEDOK_MINIMUM_AGENT_VERSION:-0.0.0}
+      KUBEDOK_ROOT: ${KUBEDOK_ROOT:?KUBEDOK_ROOT is required}
+    volumes:
+      - type: bind
+        source: ${KUBEDOK_ROOT:?KUBEDOK_ROOT is required}
+        target: ${KUBEDOK_ROOT:?KUBEDOK_ROOT is required}
+        read_only: true
     secrets:
       - postgres-password
       - jwt-secret

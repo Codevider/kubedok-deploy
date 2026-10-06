@@ -37,6 +37,7 @@ jobs:
           set -euo pipefail
           # Values the files require but that only exist on a real install.
           cat > /tmp/test.env <<'ENV'
+          KUBEDOK_ROOT=/tmp/kubedok-root
           KUBEDOK_SECRETS_DIR=/tmp/secrets
           KUBEDOK_TLS_DIR=/tmp/tls
           KUBEDOK_IMAGE_POSTGRES=example/postgres@sha256:0000000000000000000000000000000000000000000000000000000000000000
@@ -45,7 +46,7 @@ jobs:
           KUBEDOK_IMAGE_AGENT=example/agent@sha256:0000000000000000000000000000000000000000000000000000000000000000
           KUBEDOK_API_URL=http://127.0.0.1
           ENV
-          mkdir -p /tmp/secrets /tmp/tls/letsencrypt /tmp/tls/webroot
+          mkdir -p /tmp/kubedok-root /tmp/secrets /tmp/tls/letsencrypt /tmp/tls/webroot
           for f in postgres server nginx agent; do
             echo "checking compose/${f}.yml"
             docker compose --env-file /tmp/test.env -f "compose/${f}.yml" config -q

@@ -364,6 +364,16 @@ install_release() {
     fi
   done
 
+  # update.sh lives at the repository root, but in a release tree it goes
+  # beside common.sh: operators run current/scripts/update.sh, and every
+  # release keeps the updater that came with it.
+  if [ -f "${SCRIPT_DIR}/update.sh" ]; then
+    install -m 755 "${SCRIPT_DIR}/update.sh" "${RELEASE_DIR}/scripts/update.sh"
+  else
+    fetch_url "${KUBEDOK_RELEASE_BASE_URL}/update.sh" "${RELEASE_DIR}/scripts/update.sh"
+    chmod 755 "${RELEASE_DIR}/scripts/update.sh"
+  fi
+
   set_current_release "${RELEASE_VERSION}"
   ok "Installed release tree at ${RELEASE_DIR}"
 }
@@ -521,7 +531,7 @@ print_summary() {
   printf '  Restart          %s/restart.sh [component|all]\n' "${s}"
   printf '  Health check     %s/doctor.sh\n' "${s}"
   printf '  Backup           %s/backup.sh\n' "${s}"
-  printf '  Update           %s/update.sh\n' "${KUBEDOK_ROOT}"
+  printf '  Update           %s/update.sh\n' "${s}"
   printf '\n'
 
   if [ "${KUBEDOK_TLS_ENABLED}" != "true" ]; then

@@ -2,9 +2,12 @@
 #
 # Kubedok updater.
 #
-#   sudo /opt/kubedok/update.sh                 # latest on the configured channel
-#   sudo /opt/kubedok/update.sh 1.3.0           # a specific release
-#   sudo /opt/kubedok/update.sh --check         # report only, change nothing
+#   sudo /opt/kubedok/current/scripts/update.sh           # latest on the configured channel
+#   sudo /opt/kubedok/current/scripts/update.sh 1.3.0     # a specific release
+#   sudo /opt/kubedok/current/scripts/update.sh --check   # report only, change nothing
+#
+# Every release tree carries its own copy beside common.sh. From a clone of
+# the repository, ./update.sh at its root works the same way.
 #
 # Order of operations is deliberate: back up before pulling, update the server
 # before nginx, and only record the new release as current once it has served
@@ -15,6 +18,9 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Bootstrap: common.sh is under scripts/ in the repository, and beside this
+# script once installed.
 if [ -f "${SCRIPT_DIR}/scripts/common.sh" ]; then
   # shellcheck source=scripts/common.sh
   . "${SCRIPT_DIR}/scripts/common.sh"
@@ -22,7 +28,7 @@ elif [ -f "${SCRIPT_DIR}/common.sh" ]; then
   # shellcheck source=scripts/common.sh
   . "${SCRIPT_DIR}/common.sh"
 else
-  echo "Cannot find scripts/common.sh next to update.sh" >&2
+  echo "Cannot find common.sh beside update.sh or in scripts/ next to it" >&2
   exit 1
 fi
 
@@ -32,7 +38,7 @@ TARGET_REF=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --check) CHECK_ONLY=true; shift ;;
-    -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,17p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) die "Unknown option: $1" ;;
     *) TARGET_REF="$1"; shift ;;
   esac
@@ -147,6 +153,10 @@ for file in common.sh doctor.sh backup.sh restore.sh status.sh logs.sh restart.s
     chmod 755 "${NEW_RELEASE_DIR}/scripts/${file}"
   fi
 done
+# The updater is published at the repository root and installed beside
+# common.sh, so the next update runs the copy that came with this release.
+fetch_url "${KUBEDOK_RELEASE_BASE_URL}/update.sh" "${NEW_RELEASE_DIR}/scripts/update.sh"
+chmod 755 "${NEW_RELEASE_DIR}/scripts/update.sh"
 ok "Release tree staged"
 
 # Drive the staged compose files while `current` still points at the old
