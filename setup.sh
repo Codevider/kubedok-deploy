@@ -17,7 +17,7 @@
 #   KUBEDOK_HOST                 DNS name this install is served on. Required for TLS.
 #   KUBEDOK_TLS                  off | on | auto          (default: auto)
 #   KUBEDOK_TLS_SKIP_DNS_CHECK   Proceed even if DNS points at a proxy/CDN.
-#   KUBEDOK_LETSENCRYPT_EMAIL    Contact address for the ACME account.
+#   KUBEDOK_LETSENCRYPT_EMAIL    Contact address for the ACME account. Optional.
 #   KUBEDOK_ENABLE_AGENT         Install the agent on this host too. (default: false)
 #   KUBEDOK_RELEASE              Channel name or exact version. (default: stable)
 #   KUBEDOK_PUBLIC_POSTGRES      Publish 5432 for debugging. (default: false)
@@ -165,8 +165,6 @@ resolve_tls() {
     on)
       [ -n "${KUBEDOK_HOST:-}" ] \
         || die "KUBEDOK_TLS=on requires KUBEDOK_HOST to be a DNS name you control."
-      [ -n "${KUBEDOK_LETSENCRYPT_EMAIL:-}" ] \
-        || die "KUBEDOK_TLS=on requires KUBEDOK_LETSENCRYPT_EMAIL for the ACME account."
       if ! dns_points_here "${KUBEDOK_HOST}"; then
         if [ "${KUBEDOK_TLS_SKIP_DNS_CHECK:-false}" = "true" ]; then
           warn "DNS does not point here, but KUBEDOK_TLS_SKIP_DNS_CHECK=true — continuing."
@@ -189,8 +187,6 @@ resolve_tls() {
         # mistake behind an insecure install.
         explain_dns_failure "${KUBEDOK_HOST}"
         exit 1
-      elif [ -z "${KUBEDOK_LETSENCRYPT_EMAIL:-}" ]; then
-        die "KUBEDOK_HOST resolves here but KUBEDOK_LETSENCRYPT_EMAIL is not set. Set it, or use KUBEDOK_TLS=off."
       else
         KUBEDOK_TLS_ENABLED=true
         ok "TLS enabled for ${KUBEDOK_HOST}"

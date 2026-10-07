@@ -88,8 +88,6 @@ fi
 
 [ -n "${KUBEDOK_HOST:-}" ] \
   || die "KUBEDOK_HOST is not set in ${KUBEDOK_CONFIG_FILE}. TLS needs a DNS name."
-[ -n "${KUBEDOK_LETSENCRYPT_EMAIL:-}" ] \
-  || die "KUBEDOK_LETSENCRYPT_EMAIL is not set in ${KUBEDOK_CONFIG_FILE}."
 
 mkdir -p "${LE_DIR}" "${WEBROOT}"
 chmod 755 "${WEBROOT}"
@@ -195,9 +193,16 @@ case "${MODE}" in
 
     args=(certonly --webroot -w /var/www/certbot
           -d "${KUBEDOK_HOST}"
-          --email "${KUBEDOK_LETSENCRYPT_EMAIL}"
-          --agree-tos --no-eff-email --non-interactive
+          --agree-tos --non-interactive
           --keep-until-expiring)
+    # The contact address is optional: Let's Encrypt registers an account
+    # without one, and it stopped sending expiry reminders in 2025. Only the
+    # first issuance registers; later runs reuse the account.
+    if [ -n "${KUBEDOK_LETSENCRYPT_EMAIL:-}" ]; then
+      args+=(--email "${KUBEDOK_LETSENCRYPT_EMAIL}" --no-eff-email)
+    else
+      args+=(--register-unsafely-without-email)
+    fi
     [ "${DRY_RUN}" = "true" ] && args+=(--dry-run)
     [ "${FORCE}" = "true" ] && args+=(--force-renewal)
 

@@ -25,8 +25,9 @@ one-time bootstrap — everything afterwards runs from `/opt/kubedok`, and
 `update.sh` fetches new releases over HTTPS without needing git. You can delete
 the clone once the install finishes.
 
-Without a domain, omit both variables: it serves HTTP only, with a warning
-rather than a self-signed certificate.
+`KUBEDOK_LETSENCRYPT_EMAIL` is optional: without it, the Let's Encrypt account
+is registered with no contact address. Without a domain, omit both variables:
+it serves HTTP only, with a warning rather than a self-signed certificate.
 
 `setup.sh` installs Docker if needed, generates secrets, pulls the release
 images by digest, brings up PostgreSQL, the server, and nginx on private

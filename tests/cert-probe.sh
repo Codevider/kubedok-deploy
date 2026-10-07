@@ -124,10 +124,12 @@ start_stack() {
 }
 
 # Rewrites the install's config. Extra KEY=VALUE arguments are appended.
+# LE_EMAIL= (set, empty) writes the config setup.sh leaves without an address.
 write_config() {
   local host="$1"; shift
   {
-    printf 'KUBEDOK_HOST=%s\nKUBEDOK_LETSENCRYPT_EMAIL=test@example.com\nKUBEDOK_TLS_ENABLED=true\n' "${host}"
+    printf 'KUBEDOK_HOST=%s\nKUBEDOK_LETSENCRYPT_EMAIL=%s\nKUBEDOK_TLS_ENABLED=true\n' \
+      "${host}" "${LE_EMAIL-test@example.com}"
     local line
     for line in "$@"; do printf '%s\n' "${line}"; done
   } > "${INSTALL_ROOT}/config/kubedok.env"
@@ -173,7 +175,14 @@ expect_line 'nginx serves the webroot locally'     'nginx serves the challenge w
 expect_line 'the public probe succeeds'            'Challenge path reachable from the internet'
 expect_line 'certbot is invoked with the webroot'  "certonly --webroot -w /var/www/certbot -d ${HOST}"
 expect_line 'the dry run is passed through'        '--dry-run'
+expect_line 'the contact address is passed'        '--email test@example.com'
 if [ "$(probe_files)" = "0" ]; then pass 'the probe file is cleaned up'; else fails "$(probe_files) probe file(s) left in the webroot"; fi
+
+LE_EMAIL='' write_config "${HOST}"
+run_issue
+if [ "${RC}" -eq 0 ]; then pass 'without a contact address, issuance still goes ahead'; else fails "exit ${RC}"; dump; fi
+expect_line 'the account is registered without one' '--register-unsafely-without-email'
+reject_line 'no empty address is passed'           '--email'
 
 # ═══════════════════════════════════════════════════════════════════════════
 step 'TEST 2 — nginx fine, public route broken: the message blames the route'
