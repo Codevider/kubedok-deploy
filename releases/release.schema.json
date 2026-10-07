@@ -10,6 +10,8 @@
     "release",
     "publishedAt",
     "images",
+    "builtFrom",
+    "agentVersion",
     "postgresMajor",
     "minimumAgentVersion",
     "minimumUpgradeFrom"
@@ -21,7 +23,7 @@
       "const": 1
     },
     "release": {
-      "description": "Suite release version. All components ship under this one version.",
+      "description": "Release version: names this set of four images. The server, nginx and PostgreSQL images are tagged with the release that built them; the agent has a version of its own (agentVersion).",
       "type": "string",
       "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
     },
@@ -31,7 +33,7 @@
       "format": "date-time"
     },
     "gitRevision": {
-      "description": "Commit the images were built from.",
+      "description": "Commit the release was assembled from. Each image's own source commit is in builtFrom.",
       "type": "string",
       "pattern": "^[0-9a-f]{40}$"
     },
@@ -46,6 +48,23 @@
         "postgres": { "$ref": "#/$defs/digestRef" },
         "agent": { "$ref": "#/$defs/digestRef" }
       }
+    },
+    "builtFrom": {
+      "description": "The commit each image was built from. An image a release kept from the one before keeps that commit too, which is what release.sh measures changes against.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["server", "nginx", "postgres", "agent"],
+      "properties": {
+        "server": { "$ref": "#/$defs/commit" },
+        "nginx": { "$ref": "#/$defs/commit" },
+        "postgres": { "$ref": "#/$defs/commit" },
+        "agent": { "$ref": "#/$defs/commit" }
+      }
+    },
+    "agentVersion": {
+      "description": "Version of the agent image this release ships: the agent's own, apart from the release's. A release that did not change the agent keeps the previous one and its version.",
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
     },
     "postgresMajor": {
       "description": "PostgreSQL major version this release expects. A change here is a major-version upgrade and is never performed by update.sh.",
@@ -71,6 +90,10 @@
     "digestRef": {
       "type": "string",
       "pattern": "^[a-z0-9][a-z0-9._/-]*@sha256:[0-9a-f]{64}$"
+    },
+    "commit": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}$"
     }
   }
 }

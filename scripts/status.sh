@@ -17,9 +17,10 @@ MANIFEST="${KUBEDOK_CURRENT_LINK}/release.json"
 printf '\n'
 printf '  %sKubedok%s  release %s\n' "${_c_blue}" "${_c_reset}" "${CURRENT_VERSION}"
 if [ -f "${MANIFEST}" ]; then
-  printf '  published %s   postgres %s   min agent %s\n' \
+  printf '  published %s   postgres %s   agent %s   min agent %s\n' \
     "$(jq -r '.publishedAt // "—"' "${MANIFEST}")" \
     "$(jq -r '.postgresMajor // "—"' "${MANIFEST}")" \
+    "$(jq -r '.agentVersion // "—"' "${MANIFEST}")" \
     "$(jq -r '.minimumAgentVersion // "—"' "${MANIFEST}")"
 fi
 printf '\n'

@@ -2,13 +2,14 @@
 #
 # Update the Kubedok agent on this host, independently of the control plane.
 #
-#   agent-update.sh                # to the release the control plane runs
-#   agent-update.sh --release 1.3.0
+#   agent-update.sh                  # to the agent the control plane's release ships
+#   agent-update.sh --release 1.3.0  # to the agent release 1.3.0 ships
 #   agent-update.sh --check
 #
 # Agents update separately on purpose: a control-plane update must not restart
-# workloads on every managed host at once. The compatibility floor is
-# minimumAgentVersion in the release manifest.
+# workloads on every managed host at once. The agent has a version of its
+# own (agentVersion in the release manifest); the compatibility floor is
+# minimumAgentVersion there.
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -37,7 +38,7 @@ require_cmd docker curl jq
 # shellcheck disable=SC1091
 set -a; . "${AGENT_ROOT}/agent.env"; set +a
 
-CURRENT_AGENT_RELEASE="${KUBEDOK_AGENT_RELEASE:-unknown}"
+CURRENT_AGENT="${KUBEDOK_AGENT_RELEASE:-unknown}"
 CURRENT_IMAGE="${KUBEDOK_IMAGE_AGENT:-}"
 
 # Default to whatever release the control plane is actually running, which is
@@ -57,17 +58,18 @@ trap 'rm -f "${MANIFEST}"' EXIT
 resolve_manifest "${RELEASE_REF}" "${MANIFEST}" >/dev/null
 
 NEW_RELEASE="$(manifest_field release "${MANIFEST}")"
+NEW_AGENT="$(manifest_field agentVersion "${MANIFEST}")"
 NEW_IMAGE="$(manifest_image agent "${MANIFEST}")"
 MIN_AGENT="$(manifest_field minimumAgentVersion "${MANIFEST}")"
 
 printf '\n'
-printf '  Installed agent   %s\n' "${CURRENT_AGENT_RELEASE}"
-printf '  Target release    %s\n' "${NEW_RELEASE}"
+printf '  Installed agent   %s\n' "${CURRENT_AGENT}"
+printf '  Target agent      %s  (release %s)\n' "${NEW_AGENT}" "${NEW_RELEASE}"
 printf '  Compatibility     server requires agent >= %s\n' "${MIN_AGENT}"
 printf '\n'
 
 if [ "${CURRENT_IMAGE}" = "${NEW_IMAGE}" ]; then
-  ok "Already on ${NEW_RELEASE}. Nothing to do."
+  ok "Already on agent ${NEW_AGENT}. Nothing to do."
   exit 0
 fi
 
@@ -83,7 +85,7 @@ docker pull -q "${NEW_IMAGE}" >/dev/null || die "Could not pull ${NEW_IMAGE}"
 PREVIOUS_IMAGE="${CURRENT_IMAGE}"
 
 sed -i.bak "s|^KUBEDOK_IMAGE_AGENT=.*|KUBEDOK_IMAGE_AGENT=${NEW_IMAGE}|" "${AGENT_ROOT}/agent.env"
-sed -i.bak "s|^KUBEDOK_AGENT_RELEASE=.*|KUBEDOK_AGENT_RELEASE=${NEW_RELEASE}|" "${AGENT_ROOT}/agent.env"
+sed -i.bak "s|^KUBEDOK_AGENT_RELEASE=.*|KUBEDOK_AGENT_RELEASE=${NEW_AGENT}|" "${AGENT_ROOT}/agent.env"
 rm -f "${AGENT_ROOT}/agent.env.bak"
 
 log "Restarting the agent"
@@ -93,13 +95,13 @@ $(compose_cmd) --env-file "${AGENT_ROOT}/agent.env" -f "${AGENT_ROOT}/docker-com
 sleep 6
 state="$(docker inspect -f '{{.State.Status}}' kubedok-agent 2>/dev/null || echo missing)"
 if [ "${state}" != "running" ]; then
-  err "The agent did not start on ${NEW_RELEASE} (state: ${state}). Reverting."
+  err "The agent did not start on ${NEW_AGENT} (state: ${state}). Reverting."
   docker logs --tail 30 kubedok-agent 2>&1 | sed 's/^/      /' >&2 || true
   sed -i "s|^KUBEDOK_IMAGE_AGENT=.*|KUBEDOK_IMAGE_AGENT=${PREVIOUS_IMAGE}|" "${AGENT_ROOT}/agent.env"
-  sed -i "s|^KUBEDOK_AGENT_RELEASE=.*|KUBEDOK_AGENT_RELEASE=${CURRENT_AGENT_RELEASE}|" "${AGENT_ROOT}/agent.env"
+  sed -i "s|^KUBEDOK_AGENT_RELEASE=.*|KUBEDOK_AGENT_RELEASE=${CURRENT_AGENT}|" "${AGENT_ROOT}/agent.env"
   # shellcheck disable=SC2046
   $(compose_cmd) --env-file "${AGENT_ROOT}/agent.env" -f "${AGENT_ROOT}/docker-compose.yml" up -d
-  die "Reverted to ${CURRENT_AGENT_RELEASE}."
+  die "Reverted to ${CURRENT_AGENT}."
 fi
 
-ok "Agent updated to ${NEW_RELEASE}"
+ok "Agent updated to ${NEW_AGENT}"

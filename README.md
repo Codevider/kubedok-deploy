@@ -124,7 +124,7 @@ scripts/
 releases/
   release.schema.json       The manifest contract.
   example.json              Documented example. Not a real release.
-  <version>.json            Published by CI, one per release.
+  <version>.json            One per release, published by release.sh.
 channels/
   stable.json               Points at the current stable release.
 tests/
@@ -157,8 +157,9 @@ and `doctor.sh` asserts that rather than assuming it.
 `repo@sha256:…`. A tag can be repointed after publication; a digest cannot.
 Two servers installing "1.2.3" a month apart get identical bytes.
 
-**The manifest is a promise.** CI publishes it only after all four images
-have been pushed and each digest has been verified pullable.
+**The manifest is a promise.** `release.sh` publishes it only after every
+image it names, built for it or kept from the release before, has been
+verified pullable.
 
 **`current` is the commit point.** `update.sh` stages the new release tree
 outside `releases/`, updates the server, waits for health, updates nginx, and
@@ -208,9 +209,14 @@ cannot reach the CA.
 
 ## Releases
 
-Releases are cut in the application repository. A `vX.Y.Z` tag there builds
-all four images and commits a manifest to this repository's `releases/`,
-pointing `channels/stable.json` at it. This repository is never tagged.
+Releases are cut in the application repository by `scripts/release.sh`, or by
+its release workflow, which runs the same script for a pushed `vX.Y.Z` tag. It
+builds only the images whose sources changed since they were built, keeps the
+others' digests, and commits a manifest to this repository's `releases/`,
+pointing `channels/stable.json` at it. The agent has a version of its own
+(`agentVersion` in the manifest), PostgreSQL is built only on request, and
+publishing a version again replaces its manifest. This repository is never
+tagged.
 
 `KUBEDOK_RELEASE` accepts a channel name (`stable`) or an exact version
 (`1.2.3`).

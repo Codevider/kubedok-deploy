@@ -9,6 +9,13 @@
     "postgres": "approxx/kubedok-postgres@sha256:63ab4f3f7823a488676e3e3434a55658348b646043aa4525428c1fc148ae9666",
     "agent": "approxx/kubedok-agent@sha256:80b46838bb6c64d7403066f2a3a82902a53e5967e05ceda83cf5e591d682a348"
   },
+  "builtFrom": {
+    "server": "4b059d0ec0b8266f11af578916945dd84ddb3d62",
+    "nginx": "4b059d0ec0b8266f11af578916945dd84ddb3d62",
+    "postgres": "4b059d0ec0b8266f11af578916945dd84ddb3d62",
+    "agent": "4b059d0ec0b8266f11af578916945dd84ddb3d62"
+  },
+  "agentVersion": "1.4.9",
   "postgresMajor": 16,
   "minimumAgentVersion": "1.4.9",
   "minimumUpgradeFrom": "1.4.9",

@@ -229,7 +229,7 @@ validate_manifest() {
   fi
 
   local field
-  for field in release publishedAt postgresMajor minimumAgentVersion minimumUpgradeFrom; do
+  for field in release publishedAt postgresMajor minimumAgentVersion minimumUpgradeFrom agentVersion; do
     jq -e --arg f "${field}" 'has($f) and (.[$f] != null)' "${file}" >/dev/null \
       || die "Release manifest is missing required field: ${field}"
   done
@@ -238,6 +238,11 @@ validate_manifest() {
   local release
   release="$(jq -r '.release' "${file}")"
   is_semver "${release}" || die "Release manifest's release is not a version (X.Y.Z): ${release}"
+  # The agent is versioned apart from the release; agent-install.sh and
+  # agent-update.sh record this, and the server reports it.
+  local agent_version
+  agent_version="$(jq -r '.agentVersion' "${file}")"
+  is_semver "${agent_version}" || die "Release manifest's agentVersion is not a version (X.Y.Z): ${agent_version}"
 
   local component ref
   for component in server nginx postgres agent; do
@@ -336,6 +341,7 @@ write_compose_env() {
     printf 'KUBEDOK_IMAGE_AGENT=%s\n' "$(manifest_image agent "${manifest}")"
     printf 'KUBEDOK_RELEASE_VERSION=%s\n' "$(manifest_field release "${manifest}")"
     printf 'KUBEDOK_GIT_REVISION=%s\n' "$(jq -r '.gitRevision // ""' "${manifest}")"
+    printf 'KUBEDOK_AGENT_VERSION=%s\n' "$(manifest_field agentVersion "${manifest}")"
     printf 'KUBEDOK_MINIMUM_AGENT_VERSION=%s\n' "$(manifest_field minimumAgentVersion "${manifest}")"
     printf 'KUBEDOK_POSTGRES_USER=%s\n' "${KUBEDOK_POSTGRES_USER:-kubedok}"
     printf 'KUBEDOK_POSTGRES_DB=%s\n' "${KUBEDOK_POSTGRES_DB:-kubedok}"

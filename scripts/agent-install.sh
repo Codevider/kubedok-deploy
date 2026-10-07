@@ -53,7 +53,8 @@ RELEASE_REF="${RELEASE_REF:-stable}"
 [ -n "${API_URL}" ] || die "The API URL is required on a host without a control plane: --api-url https://kubedok.example.com"
 
 # Resolve the agent image digest from the release manifest, so an agent is
-# pinned exactly like every other component.
+# pinned exactly like every other component. The manifest also names the
+# agent's own version, which is not the release's.
 log "Resolving the agent image for release '${RELEASE_REF}'"
 MANIFEST="$(mktemp)"
 LOCAL_MANIFEST="${KUBEDOK_CURRENT_LINK}/release.json"
@@ -65,7 +66,7 @@ else
 fi
 
 AGENT_IMAGE="$(manifest_image agent "${MANIFEST}")"
-AGENT_RELEASE="$(manifest_field release "${MANIFEST}")"
+AGENT_VERSION="$(manifest_field agentVersion "${MANIFEST}")"
 ok "Agent image: ${AGENT_IMAGE}"
 
 log "Checking the control plane at ${API_URL}"
@@ -93,7 +94,7 @@ fi
   printf 'KUBEDOK_HOST_ADDRESS=%s\n' "${HOST_ADDRESS}"
   printf 'KUBEDOK_SYNC_INTERVAL_SECS=%s\n' "${KUBEDOK_SYNC_INTERVAL_SECS:-15}"
   printf 'KUBEDOK_AGENT_LOG=%s\n' "${KUBEDOK_AGENT_LOG:-kubedok_agent=info}"
-  printf 'KUBEDOK_AGENT_RELEASE=%s\n' "${AGENT_RELEASE}"
+  printf 'KUBEDOK_AGENT_RELEASE=%s\n' "${AGENT_VERSION}"
 } > "${AGENT_ROOT}/agent.env"
 chmod 600 "${AGENT_ROOT}/agent.env"
 rm -f "${MANIFEST}"
@@ -113,7 +114,7 @@ if [ "${state}" != "running" ]; then
   die "Agent installation failed."
 fi
 
-ok "Agent ${AGENT_RELEASE} is running"
+ok "Agent ${AGENT_VERSION} is running"
 printf '\n'
 printf '  Config   %s/agent.env\n' "${AGENT_ROOT}"
 printf '  Logs     docker logs -f kubedok-agent\n'

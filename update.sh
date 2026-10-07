@@ -98,9 +98,13 @@ if ! semver_ge "${NEW_VERSION}" "${CURRENT_VERSION}"; then
 fi
 
 # Too-large a jump: the intermediate release contains migrations this one
-# assumes have already run.
+# assumes have already run. A release that names itself as the floor starts a
+# new baseline, which no earlier install can update to at all.
 MIN_FROM="$(manifest_field minimumUpgradeFrom "${NEW_MANIFEST_TMP}")"
 if ! semver_ge "${CURRENT_VERSION}" "${MIN_FROM}"; then
+  if [ "${MIN_FROM}" = "${NEW_VERSION}" ]; then
+    die "Cannot update ${CURRENT_VERSION} → ${NEW_VERSION}. ${NEW_VERSION} starts a new baseline that no earlier release updates to: it is only installed fresh, on an empty database."
+  fi
   die "Cannot update ${CURRENT_VERSION} → ${NEW_VERSION} directly. That release requires at least ${MIN_FROM} installed first. Update to ${MIN_FROM} and try again."
 fi
 
@@ -166,8 +170,7 @@ for file in postgres.yml postgres.public.yml server.yml nginx.yml agent.yml; do
   fetch_url "${KUBEDOK_RELEASE_BASE_URL}/compose/${file}" "${STAGED_DIR}/compose/${file}"
 done
 for file in common.sh doctor.sh backup.sh restore.sh status.sh logs.sh restart.sh \
-            rollback.sh agent-install.sh agent-update.sh cert-renew.sh uninstall.sh \
-            migrate-from-monolith.sh; do
+            rollback.sh agent-install.sh agent-update.sh cert-renew.sh uninstall.sh; do
   fetch_url "${KUBEDOK_RELEASE_BASE_URL}/scripts/${file}" "${STAGED_DIR}/scripts/${file}"
   chmod 755 "${STAGED_DIR}/scripts/${file}"
 done

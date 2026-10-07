@@ -179,8 +179,10 @@ write_manifest() {
     --arg agent    "$(digest_of postgres "${version}")" \
     --argjson pg   "${pg_major}" \
     --arg minFrom  "${min_from}" \
+    --arg rev      "0000000000000000000000000000000000000000" \
     '{schemaVersion:1, release:$release, publishedAt:$published,
       images:{server:$server, nginx:$nginx, postgres:$postgres, agent:$agent},
+      builtFrom:{server:$rev, nginx:$rev, postgres:$rev, agent:$rev}, agentVersion:"1.0.0",
       postgresMajor:$pg, minimumAgentVersion:"1.0.0", minimumUpgradeFrom:$minFrom}' \
     > "${SERVE_DIR}/releases/${version}.json"
 }

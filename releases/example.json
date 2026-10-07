@@ -9,8 +9,15 @@
     "postgres": "approxx/kubedok-postgres@sha256:0000000000000000000000000000000000000000000000000000000000000000",
     "agent": "approxx/kubedok-agent@sha256:0000000000000000000000000000000000000000000000000000000000000000"
   },
+  "builtFrom": {
+    "server": "0000000000000000000000000000000000000000",
+    "nginx": "0000000000000000000000000000000000000000",
+    "postgres": "0000000000000000000000000000000000000000",
+    "agent": "0000000000000000000000000000000000000000"
+  },
+  "agentVersion": "1.2.0",
   "postgresMajor": 16,
   "minimumAgentVersion": "1.0.0",
   "minimumUpgradeFrom": "1.0.0",
-  "notes": "Example manifest. Not a real release — CI generates these at tag time."
+  "notes": "Example manifest. Not a real release \u2014 CI generates these at tag time."
 }
