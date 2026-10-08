@@ -34,6 +34,9 @@ RUNNER="kubedok-test-runner"
 WRONG_RELEASE_IMAGE="kubedok-test-wrong-release:latest"
 # Built by TEST 5: the dev server image with a new digest, publishing 1.0.1 again.
 REPUBLISHED_IMAGE="kubedok-test-republished:latest"
+# Built by TEST 6b: an image no release names, pulled by digest alone.
+STALE_IMAGE="kubedok-test-stale:latest"
+STALE_REF=""
 HTTP_PORT="${KUBEDOK_TEST_HTTP_PORT:-18080}"
 
 PASS=0
@@ -110,7 +113,8 @@ cleanup() {
   step 'Cleaning up'
   docker rm -f kubedok-nginx kubedok-server kubedok-postgres kubedok-agent >/dev/null 2>&1 || true
   docker rm -f "${RUNNER}" "${REG_NAME}" >/dev/null 2>&1 || true
-  docker image rm "${WRONG_RELEASE_IMAGE}" "${REPUBLISHED_IMAGE}" >/dev/null 2>&1 || true
+  docker image rm "${WRONG_RELEASE_IMAGE}" "${REPUBLISHED_IMAGE}" "${STALE_IMAGE}" >/dev/null 2>&1 || true
+  if [ -n "${STALE_REF}" ]; then docker image rm "${STALE_REF}" >/dev/null 2>&1 || true; fi
   # The tags the releases were pushed under. The images stay, as kubedok-*:dev.
   docker images --format '{{.Repository}}:{{.Tag}}' | grep "^localhost:${REG_PORT}/kubedok-" \
     | while read -r tag; do docker image rm "${tag}" >/dev/null 2>&1 || true; done
@@ -915,6 +919,63 @@ else
 fi
 
 # ═══════════════════════════════════════════════════════════════════════════
+step 'TEST 6b — kbd clean'
+
+# What an install gathers: an image no release names any more, pulled by
+# digest alone as update.sh pulls, and the staging area of a killed update.
+# The suite's other images all carry tags, which clean leaves alone.
+cid="$(docker create kubedok-server:dev)"
+docker commit --change 'LABEL kubedok.test=stale' "${cid}" "${STALE_IMAGE}" >/dev/null
+docker rm "${cid}" >/dev/null
+docker tag "${STALE_IMAGE}" "localhost:${REG_PORT}/kubedok-server:stale"
+docker push -q "localhost:${REG_PORT}/kubedok-server:stale" >/dev/null 2>&1 || abort 'could not push the stale image'
+STALE_REF="$(docker image inspect "localhost:${REG_PORT}/kubedok-server:stale" \
+  --format '{{range .RepoDigests}}{{println .}}{{end}}' | grep "^localhost:${REG_PORT}/kubedok-server@" | head -1 | tr -d '\n')"
+docker image rm "${STALE_IMAGE}" "localhost:${REG_PORT}/kubedok-server:stale" >/dev/null 2>&1 || true
+inrun "docker pull -q ${STALE_REF}" >/dev/null 2>&1 || abort 'could not pull the stale image by digest'
+inrun "mkdir -p ${INSTALL_ROOT}/.staging/9.9.9"
+
+out="$(inrun 'kbd clean --dry-run' 2>&1 || true)"
+if grep -qF "${STALE_REF}" <<<"${out}"; then
+  pass 'kbd clean --dry-run lists the image no release uses'
+else
+  fails 'kbd clean --dry-run does not list the image no release uses'
+  printf '%s\n' "${out}" | tail -12 | sed 's/^/      /'
+fi
+if grep -qF "${INSTALL_ROOT}/.staging" <<<"${out}"; then
+  pass 'and the staging area a killed update left'
+else
+  fails 'kbd clean --dry-run does not list the staging area'
+fi
+if grep -qF "$(digest_of server 1.0.1)" <<<"${out}"; then
+  fails "kbd clean would remove 1.0.1's server image"
+else
+  pass "1.0.1's server image is not on the list"
+fi
+assert_ok 'the dry run removed no image' docker image inspect "${STALE_REF}"
+assert_ok 'nor the staging area' docker exec "${RUNNER}" test -d "${INSTALL_ROOT}/.staging/9.9.9"
+
+if inrun 'kbd clean --yes' > "${WORK}/clean.log" 2>&1; then
+  pass 'kbd clean --yes completed'
+else
+  fails 'kbd clean --yes failed'
+  tail -20 "${WORK}/clean.log" | sed 's/^/      /'
+fi
+assert_fails 'the image no release uses is gone' docker image inspect "${STALE_REF}"
+assert_fails 'the staging area is gone' docker exec "${RUNNER}" test -e "${INSTALL_ROOT}/.staging"
+assert_ok "1.0.1's images stay" docker image inspect "$(digest_of server 1.0.1)"
+assert_ok "1.0.0's stay too: it is on disk for a rollback" docker image inspect "$(digest_of server 1.0.0)"
+assert_ok 'a tagged image no release uses is left alone' \
+  docker image inspect "localhost:${REG_PORT}/kubedok-server:1.0.4"
+assert_eq '1.0.0 1.0.1' "$(release_entries)" 'without --releases, every release tree stays'
+out="$(inrun 'kbd clean --yes' 2>&1 || true)"
+if grep -q 'Nothing to clean' <<<"${out}"; then
+  pass 'a second run has nothing to clean'
+else
+  fails 'a second run still found something to clean'
+fi
+
+# ═══════════════════════════════════════════════════════════════════════════
 step 'TEST 7 — rollback.sh 1.0.1 → 1.0.0'
 
 if inrun "${INSTALL_ROOT}/current/scripts/rollback.sh --yes" > "${WORK}/rollback.log" 2>&1; then
@@ -943,6 +1004,23 @@ else
   printf '%s\n' "${out}" | tail -5 | sed 's/^/      /'
 fi
 assert_eq '1.0.0' "$(installed_release)" 'the refused rollback left the install on 1.0.0'
+
+# The rollback left 1.0.1 on disk, neither current nor previous now.
+out="$(inrun 'kbd clean --releases --dry-run' 2>&1 || true)"
+if grep -qF "${INSTALL_ROOT}/releases/1.0.1" <<<"${out}"; then
+  pass 'kbd clean --releases lists the 1.0.1 tree'
+else
+  fails 'kbd clean --releases does not list the 1.0.1 tree'
+  printf '%s\n' "${out}" | tail -8 | sed 's/^/      /'
+fi
+if inrun 'kbd clean --releases --yes' > "${WORK}/clean2.log" 2>&1; then
+  pass 'kbd clean --releases --yes completed'
+else
+  fails 'kbd clean --releases --yes failed'
+  tail -20 "${WORK}/clean2.log" | sed 's/^/      /'
+fi
+assert_eq '1.0.0' "$(release_entries)" 'only the current release tree is left'
+assert_eq '1.0.0' "$(installed_release)" 'and the install is still on it'
 
 # ═══════════════════════════════════════════════════════════════════════════
 step 'TEST 8 — restore.sh'

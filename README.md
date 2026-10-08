@@ -81,6 +81,7 @@ sudo kbd doctor          # diagnose a problem
 sudo kbd logs server     # logs
 sudo kbd backup          # back up
 sudo kbd rollback        # undo an update
+sudo kbd clean           # remove images updates left behind
 sudo kbd config          # show the settings
 ```
 
@@ -142,6 +143,7 @@ scripts/
   backup.sh                 Database dump plus secrets and configuration.
   restore.sh                Guarded restore. Takes a safety backup first.
   rollback.sh               Return to the previous release.
+  clean.sh                  Remove images and leftovers updates no longer need.
   cert-renew.sh             Issue and renew certificates; install the timer.
   agent-install.sh          Install the agent on any Docker host.
   agent-update.sh           Update one agent, independently.

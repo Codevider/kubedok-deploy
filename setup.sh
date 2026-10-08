@@ -390,7 +390,7 @@ install_release() {
 
   for file in common.sh doctor.sh backup.sh restore.sh status.sh logs.sh \
               restart.sh config.sh rollback.sh agent-install.sh agent-update.sh \
-              cert-renew.sh uninstall.sh kbd; do
+              cert-renew.sh uninstall.sh clean.sh kbd; do
     if [ -f "${SCRIPT_DIR}/scripts/${file}" ]; then
       install -m 755 "${SCRIPT_DIR}/scripts/${file}" "${RELEASE_DIR}/scripts/${file}"
     else

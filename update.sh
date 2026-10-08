@@ -193,7 +193,7 @@ for file in postgres.yml postgres.public.yml server.yml nginx.yml agent.yml; do
   fetch_url "${KUBEDOK_RELEASE_BASE_URL}/compose/${file}" "${STAGED_DIR}/compose/${file}"
 done
 for file in common.sh doctor.sh backup.sh restore.sh status.sh logs.sh restart.sh \
-            config.sh rollback.sh agent-install.sh agent-update.sh cert-renew.sh uninstall.sh kbd; do
+            config.sh rollback.sh agent-install.sh agent-update.sh cert-renew.sh uninstall.sh clean.sh kbd; do
   fetch_url "${KUBEDOK_RELEASE_BASE_URL}/scripts/${file}" "${STAGED_DIR}/scripts/${file}"
   chmod 755 "${STAGED_DIR}/scripts/${file}"
 done
@@ -351,4 +351,5 @@ else
 fi
 printf '  Backup taken %s\n' "${BACKUP_PATH}"
 printf '  Status       %s\n' "$(command_hint status)"
+printf '  Clean up     %s  (images no release uses any more)\n' "$(command_hint clean)"
 printf '\n'

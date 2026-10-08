@@ -39,6 +39,7 @@ backup|backup.sh|Back up the database, secrets and settings
 restore|restore.sh|Restore a backup
 update|update.sh|Update to a newer release, or --force the installed one again
 rollback|rollback.sh|Go back to the previous release
+clean|clean.sh|Remove the images and leftovers updates no longer need
 cert-renew|cert-renew.sh|Issue or renew the TLS certificate
 agent-install|agent-install.sh|Install the agent on this host
 agent-update|agent-update.sh|Update this host's agent
