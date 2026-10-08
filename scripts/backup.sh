@@ -2,9 +2,9 @@
 #
 # Back up the database, the deployment secrets, and the configuration.
 #
-#   backup.sh                      # timestamped backup
-#   backup.sh --label pre-upgrade  # add a label to the filename
-#   backup.sh --quiet              # print only the resulting path
+#   kbd backup                     # timestamped backup
+#   kbd backup --label pre-upgrade # add a label to the filename
+#   kbd backup --quiet             # print only the resulting path
 #
 # The secrets are in the archive on purpose: a database restored without
 # registry-encryption-key leaves every stored registry credential and

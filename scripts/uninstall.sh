@@ -2,8 +2,8 @@
 #
 # Remove the Kubedok containers, networks, and installed release tree.
 #
-#   uninstall.sh                # keeps the database, secrets, and backups
-#   uninstall.sh --purge-data   # ALSO deletes the database volume and secrets
+#   kbd uninstall               # keeps the database, secrets, and backups
+#   kbd uninstall --purge-data  # ALSO deletes the database volume and secrets
 #
 # Data deletion is a separate, explicit flag. The default leaves everything
 # recoverable: the PostgreSQL volume, /opt/kubedok/secrets, and the backups

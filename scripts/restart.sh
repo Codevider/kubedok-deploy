@@ -2,9 +2,9 @@
 #
 # Restart one component, or everything in dependency order.
 #
-#   restart.sh            # all, in order: postgres → server → nginx
-#   restart.sh server
-#   restart.sh nginx
+#   kbd restart           # all, in order: postgres → server → nginx
+#   kbd restart server
+#   kbd restart nginx
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

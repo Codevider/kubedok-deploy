@@ -2,11 +2,11 @@
 #
 # Obtain and renew the TLS certificate, then reload nginx.
 #
-#   cert-renew.sh --issue          # first issuance
-#   cert-renew.sh                  # renew if due (safe to run daily)
-#   cert-renew.sh --force          # renew even if not due
-#   cert-renew.sh --dry-run        # exercise the flow against the ACME staging path
-#   cert-renew.sh --install-timer  # install the systemd renewal timer
+#   kbd cert-renew --issue         # first issuance
+#   kbd cert-renew                 # renew if due (safe to run daily)
+#   kbd cert-renew --force         # renew even if not due
+#   kbd cert-renew --dry-run       # exercise the flow against the ACME staging path
+#   kbd cert-renew --install-timer # install the systemd renewal timer
 #
 # nginx serves TLS but never issues anything. Certbot runs as a one-shot
 # container against the webroot nginx already exposes at

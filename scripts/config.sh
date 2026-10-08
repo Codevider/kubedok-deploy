@@ -2,12 +2,12 @@
 #
 # Show and change the install's settings.
 #
-#   config.sh                               # every setting and its value
-#   config.sh get LOG_LEVEL                 # one value
-#   config.sh set LOG_LEVEL=debug           # save it and apply it
-#   config.sh set CLIENT_MAX_BODY_SIZE=500m CORS_ORIGIN=https://app.example.com
-#   config.sh unset LOG_LEVEL               # back to the default
-#   config.sh set LOG_LEVEL=debug --no-restart   # save only; restart.sh applies it
+#   kbd config                              # every setting and its value
+#   kbd config get LOG_LEVEL                # one value
+#   kbd config set LOG_LEVEL=debug          # save it and apply it
+#   kbd config set CLIENT_MAX_BODY_SIZE=500m CORS_ORIGIN=https://app.example.com
+#   kbd config unset LOG_LEVEL              # back to the default
+#   kbd config set LOG_LEVEL=debug --no-restart  # save only; kbd restart applies it
 #
 # A change is checked, saved in config/kubedok.env and written into
 # compose.env, and only the containers that read it restart, the database
@@ -23,6 +23,9 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 . "${SCRIPT_DIR}/common.sh"
 
 usage() { sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; }
+
+# How the operator ran this, for usage errors: `kbd config`, or the script.
+ME="${KUBEDOK_INVOKED_AS:-config.sh}"
 
 RESTART=true
 ARGS=()
@@ -86,7 +89,7 @@ changeable() {
     KUBEDOK_API_URL|KUBEDOK_HOST_ADDRESS|KUBEDOK_REGISTRATION_TOKEN|KUBEDOK_SYNC_INTERVAL_SECS|KUBEDOK_AGENT_LOG)
       die "${name} is the agent's. It keeps its settings in ${KUBEDOK_AGENT_ROOT}/agent.env: edit it there, then run: $(command_hint restart) agent" ;;
     *)
-      die "${name} is not a Kubedok setting. The containers receive only the ones config.sh lists." ;;
+      die "${name} is not a Kubedok setting. The containers receive only the ones ${ME} lists." ;;
   esac
 }
 
@@ -139,7 +142,7 @@ show_settings() {
   printf '\n'
   show_row 'KUBEDOK_HOST' "${KUBEDOK_HOST:-(none)}" 'setup.sh'
   show_row 'KUBEDOK_TLS' "${KUBEDOK_TLS:-auto}, HTTPS $([ "${KUBEDOK_TLS_ENABLED:-false}" = "true" ] && echo on || echo off)" 'setup.sh'
-  show_row 'KUBEDOK_RELEASE' "${KUBEDOK_RELEASE:-stable}, $(current_release) installed" 'update.sh'
+  show_row 'KUBEDOK_RELEASE' "${KUBEDOK_RELEASE:-stable}, $(current_release) installed" "$(command_hint update)"
   show_row 'KUBEDOK_POSTGRES_USER' "$(effective_value KUBEDOK_POSTGRES_USER)" 'fixed at install'
   show_row 'KUBEDOK_POSTGRES_DB' "$(effective_value KUBEDOK_POSTGRES_DB)" 'fixed at install'
   printf '\n  Saved in %s. Change one with: %s set KEY=VALUE\n\n' \
@@ -161,12 +164,12 @@ remember_old() {
 }
 
 set_settings() {
-  [ ${#ARGS[@]} -gt 0 ] || die "Usage: config.sh set KEY=VALUE [KEY=VALUE ...]"
+  [ ${#ARGS[@]} -gt 0 ] || die "Usage: ${ME} set KEY=VALUE [KEY=VALUE ...]"
 
   # Every value is checked before any is saved.
   local pair key value i keys=() values=()
   for pair in "${ARGS[@]}"; do
-    [[ "${pair}" == *=* ]] || die "Expected KEY=VALUE, got '${pair}'. To go back to a default: config.sh unset KEY"
+    [[ "${pair}" == *=* ]] || die "Expected KEY=VALUE, got '${pair}'. To go back to a default: ${ME} unset KEY"
     key="$(changeable "${pair%%=*}")"
     value="${pair#*=}"
     check_setting "${key}" "${value}"
@@ -189,11 +192,11 @@ set_settings() {
 }
 
 unset_settings() {
-  [ ${#ARGS[@]} -gt 0 ] || die "Usage: config.sh unset KEY [KEY ...]"
+  [ ${#ARGS[@]} -gt 0 ] || die "Usage: ${ME} unset KEY [KEY ...]"
 
   local name key keys=()
   for name in "${ARGS[@]}"; do
-    [[ "${name}" != *=* ]] || die "unset takes names, not values: config.sh unset ${name%%=*}"
+    [[ "${name}" != *=* ]] || die "unset takes names, not values: ${ME} unset ${name%%=*}"
     key="$(changeable "${name}")"
     keys+=("${key}")
   done
@@ -273,11 +276,11 @@ apply_changes() {
 
 case "${COMMAND}" in
   show|list)
-    [ ${#ARGS[@]} -eq 0 ] || die "Usage: config.sh [show]"
+    [ ${#ARGS[@]} -eq 0 ] || die "Usage: ${ME} [show]"
     show_settings
     ;;
   get)
-    [ ${#ARGS[@]} -eq 1 ] || die "Usage: config.sh get KEY"
+    [ ${#ARGS[@]} -eq 1 ] || die "Usage: ${ME} get KEY"
     key="$(full_name "${ARGS[0]}")"
     is_setting "${key}" || die "${key} is not a Kubedok setting."
     printf '%s\n' "$(effective_value "${key}")"

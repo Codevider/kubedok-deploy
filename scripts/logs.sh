@@ -2,10 +2,10 @@
 #
 # Tail logs for one component, or all of them interleaved.
 #
-#   logs.sh                  # all components, following
-#   logs.sh server           # one component
-#   logs.sh server -n 200    # last 200 lines
-#   logs.sh nginx --no-follow
+#   kbd logs                 # all components, following
+#   kbd logs server          # one component
+#   kbd logs server -n 200   # last 200 lines
+#   kbd logs nginx --no-follow
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

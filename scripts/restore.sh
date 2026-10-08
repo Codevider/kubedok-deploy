@@ -2,9 +2,9 @@
 #
 # Restore a Kubedok backup. Destructive and deliberately awkward.
 #
-#   restore.sh /opt/kubedok/backups/kubedok-20260115T103000Z.tar.gz
-#   restore.sh --latest
-#   restore.sh --list
+#   kbd restore /opt/kubedok/backups/kubedok-20260115T103000Z.tar.gz
+#   kbd restore --latest
+#   kbd restore --list
 #
 # This replaces the current database contents. It stops the server first so
 # nothing writes during the restore, and it takes a safety backup of what is

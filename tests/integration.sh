@@ -363,6 +363,15 @@ else
   fails 'kbd help does not list config'
 fi
 assert_eq "${HTTP_PORT}" "$(inrun 'kbd config get http_port' | tr -d '\r')" 'kbd passes the arguments on'
+# The scripts' hints name the kbd command once it is installed. No backup
+# exists yet, and doctor.sh exits non-zero here for the host-port checks.
+out="$(inrun 'kbd doctor' 2>&1 || true)"
+if grep -q 'none yet — run kbd backup' <<<"${out}"; then
+  pass 'kbd doctor says to run kbd backup'
+else
+  fails 'kbd doctor did not say to run kbd backup'
+  grep 'Backups' <<<"${out}" | sed 's/^/      /'
+fi
 out="$(inrun 'kbd frobnicate' 2>&1 || true)"
 if grep -q 'Unknown command: frobnicate' <<<"${out}"; then
   pass 'kbd refuses an unknown command'

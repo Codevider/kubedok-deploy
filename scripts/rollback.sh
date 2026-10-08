@@ -2,9 +2,9 @@
 #
 # Roll the server and nginx back to the previously installed release.
 #
-#   rollback.sh            # undo the last update: back to the release it replaced
-#   rollback.sh 1.2.0      # to a specific release still on disk
-#   rollback.sh --list     # the releases on disk, current and previous marked
+#   kbd rollback           # undo the last update: back to the release it replaced
+#   kbd rollback 1.2.0     # to a specific release still on disk
+#   kbd rollback --list    # the releases on disk, current and previous marked
 #
 # With no version, the target is `previous`, which update.sh records as it
 # commits. A rollback clears it, so a second rollback never rolls forward to
@@ -33,7 +33,7 @@ while [ $# -gt 0 ]; do
         if [ "${rel}" = "${cur}" ]; then
           printf '%s  current\n' "${rel}"
         elif [ "${rel}" = "${prev}" ]; then
-          printf '%s  previous (rollback.sh with no version goes back to it)\n' "${rel}"
+          printf '%s  previous (%s with no version goes back to it)\n' "${rel}" "$(command_hint rollback)"
         else
           printf '%s\n' "${rel}"
         fi

@@ -2,13 +2,13 @@
 #
 # Kubedok updater.
 #
-#   sudo /opt/kubedok/current/scripts/update.sh           # latest on the configured channel
-#   sudo /opt/kubedok/current/scripts/update.sh 1.3.0     # a specific release
-#   sudo /opt/kubedok/current/scripts/update.sh --check   # report only, change nothing
-#   sudo /opt/kubedok/current/scripts/update.sh --force   # also when already on it: pull, recreate
+#   sudo kbd update           # latest on the configured channel
+#   sudo kbd update 1.3.0     # a specific release
+#   sudo kbd update --check   # report only, change nothing
+#   sudo kbd update --force   # also when already on it: pull, recreate
 #
-# Every release tree carries its own copy beside common.sh. From a clone of
-# the repository, ./update.sh at its root works the same way.
+# Every release tree carries its own copy beside common.sh, which `kbd update`
+# runs. From a clone of the repository, ./update.sh at its root works the same.
 #
 # Order of operations is deliberate: back up before pulling, update the server
 # before nginx, and only record the new release as current once it has served
@@ -114,7 +114,7 @@ if ! semver_ge "${NEW_VERSION}" "${CURRENT_VERSION}"; then
   if is_semver "${TARGET_REF}"; then
     warn "${NEW_VERSION} is older than the installed ${CURRENT_VERSION}."
     warn "Database migrations already applied by ${CURRENT_VERSION} will NOT be reverted."
-    warn "Use rollback.sh instead unless you know the schema is compatible."
+    warn "Use $(command_hint rollback) instead unless you know the schema is compatible."
   else
     die "Channel '${TARGET_REF}' offers ${NEW_VERSION}, which is older than the installed ${CURRENT_VERSION}. Refusing."
   fi

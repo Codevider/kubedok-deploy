@@ -254,7 +254,7 @@ if [ "${KUBEDOK_TLS_ENABLED:-false}" = "true" ]; then
   if systemctl is-enabled kubedok-cert-renew.timer >/dev/null 2>&1; then
     pass 'Renewal timer' 'enabled'
   else
-    note 'Renewal timer' 'not enabled — run cert-renew.sh --install-timer'
+    note 'Renewal timer' "not enabled — run $(command_hint cert-renew) --install-timer"
   fi
 else
   note 'TLS' 'disabled — traffic including login credentials is sent in the clear'
@@ -270,10 +270,10 @@ if [ "${count}" -gt 0 ]; then
   if [ "${age_days}" -le 7 ]; then
     pass 'Backups' "${count} on disk, newest ${age_days} day(s) old"
   else
-    note 'Backups' "newest is ${age_days} days old — consider scheduling backup.sh"
+    note 'Backups' "newest is ${age_days} days old — consider scheduling ${KUBEDOK_CURRENT_LINK}/scripts/backup.sh"
   fi
 else
-  note 'Backups' 'none yet — run backup.sh'
+  note 'Backups' "none yet — run $(command_hint backup)"
 fi
 
 # ── Summary ──────────────────────────────────────────────────────────────────

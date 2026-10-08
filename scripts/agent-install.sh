@@ -118,6 +118,10 @@ ok "Agent ${AGENT_VERSION} is running"
 printf '\n'
 printf '  Config   %s/agent.env\n' "${AGENT_ROOT}"
 printf '  Logs     docker logs -f kubedok-agent\n'
-printf '  Update   %s/agent-update.sh\n' "${SCRIPT_DIR}"
+if kbd_installed; then
+  printf '  Update   kbd agent-update\n'
+else
+  printf '  Update   %s/agent-update.sh\n' "${SCRIPT_DIR}"
+fi
 printf '\n'
 printf '  The host should appear in the Kubedok UI within a few seconds.\n\n'
