@@ -287,6 +287,14 @@ expect_line 'the local probe passes in TLS mode'   'nginx serves the challenge w
 expect_line 'the public probe passes in TLS mode'  'Challenge path reachable from the internet'
 expect_line 'certbot is asked to force renewal'    '--force-renewal'
 
+# Renewal covers only the host nginx serves. A certificate left from a host
+# the install used to have fails to renew once its DNS moves, and that
+# failure stopped the run before nginx reloaded the certificate in use.
+RC=0
+OUT="$(docker exec "${RUNNER}" /deploy/scripts/cert-renew.sh --dry-run 2>&1)" || RC=$?
+if [ "${RC}" -eq 0 ]; then pass 'a dry-run renewal exits 0'; else fails "exit ${RC}"; dump; fi
+expect_line 'renewal names the served host'        "renew --cert-name ${HOST} "
+
 # An edge that forces HTTPS redirects the challenge and Let's Encrypt follows,
 # so the webroot has to be served on 443 as well.
 mkdir -p "${INSTALL_ROOT}/tls/webroot/.well-known/acme-challenge"

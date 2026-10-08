@@ -29,24 +29,33 @@ restart_one() {
   fi
 }
 
+# The agent is its own install, with its own settings and image pin in
+# agent.env. Recreating it from the control plane's compose.env instead gave
+# it the release's agent image and dropped its API URL and host address.
+AGENT_ENV="${KUBEDOK_AGENT_ROOT}/agent.env"
+restart_agent() {
+  log "Restarting agent"
+  # shellcheck disable=SC2046
+  $(compose_cmd) --env-file "${AGENT_ENV}" -f "${KUBEDOK_AGENT_ROOT}/docker-compose.yml" \
+    up -d --force-recreate
+  ok "agent restarted"
+}
+
 case "${COMPONENT}" in
   postgres) restart_one postgres 180 ;;
   server)   restart_one server 300 ;;
   nginx)    restart_one nginx 120 ;;
   agent)
-    docker inspect kubedok-agent >/dev/null 2>&1 || die "No agent is installed on this host."
-    log "Restarting agent"
-    compose agent up -d --force-recreate
-    ok "agent restarted"
+    [ -f "${AGENT_ENV}" ] || die "No agent is installed on this host (${AGENT_ENV} does not exist)."
+    restart_agent
     ;;
   all)
     # Order matters: the server waits on the database, nginx proxies the server.
     restart_one postgres 180
     restart_one server 300
     restart_one nginx 120
-    if docker inspect kubedok-agent >/dev/null 2>&1; then
-      compose agent up -d --force-recreate
-      ok "agent restarted"
+    if [ -f "${AGENT_ENV}" ]; then
+      restart_agent
     fi
     if wait_for_http "$(local_base_url)/api/health" 60; then
       ok "API is responding at $(local_base_url)"

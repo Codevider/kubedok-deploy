@@ -67,6 +67,20 @@ assert_fails() {
   if "$@" >/dev/null 2>&1; then fails "${what} — the command unexpectedly succeeded"; else pass "${what}"; fi
 }
 
+# A setting as kubedok.env holds it, or as a container was given it.
+saved_setting() { inrun "sed -n 's/^$1=//p' ${INSTALL_ROOT}/config/kubedok.env | tail -n1" | tr -d '\r'; }
+container_env() {
+  docker inspect -f '{{range .Config.Env}}{{println .}}{{end}}' "$1" 2>/dev/null | sed -n "s/^$2=//p"
+}
+started_at() { docker inspect -f '{{.State.StartedAt}}' "$1" 2>/dev/null; }
+
+# Points the stable channel at a release.
+set_stable() {
+  jq -n --arg v "$1" '{schemaVersion:1, channel:"stable", release:$v,
+        manifest:("releases/" + $v + ".json"), updatedAt:"2026-01-01T00:00:00Z"}' \
+    > "${SERVE_DIR}/channels/stable.json"
+}
+
 # The install's release state, read inside the runner.
 installed_release() { inrun "readlink -f ${INSTALL_ROOT}/current | xargs basename" | tr -d '\r'; }
 previous_link()     { inrun "readlink ${INSTALL_ROOT}/previous | xargs -r basename" 2>/dev/null | tr -d '\r'; }
@@ -202,9 +216,7 @@ jq '.release = "2.0.0"' "${SERVE_DIR}/releases/2.0.0.json" > "${SERVE_DIR}/relea
 mv "${SERVE_DIR}/releases/2.0.0.tmp" "${SERVE_DIR}/releases/2.0.0.json"
 write_manifest 1.0.1 1.0.0
 
-jq -n '{schemaVersion:1, channel:"stable", release:"1.0.0",
-        manifest:"releases/1.0.0.json", updatedAt:"2026-01-01T00:00:00Z"}' \
-  > "${SERVE_DIR}/channels/stable.json"
+set_stable 1.0.0
 
 info 'releases 1.0.0, 1.0.1 and 2.0.0 (pg 17) published'
 
@@ -374,6 +386,184 @@ fi
 jwt_after="$(inrun "cat ${INSTALL_ROOT}/secrets/jwt-secret" | tr -d '\r\n')"
 assert_eq "${jwt_before}" "${jwt_after}" 'jwt-secret is not regenerated (sessions survive)'
 
+# The runner gives every script KUBEDOK_HTTP_PORT, KUBEDOK_HTTP_BIND and
+# KUBEDOK_TLS. update.sh and the rest read kubedok.env alone, so setup.sh has
+# to save what it was given; KUBEDOK_HTTP_BIND used to be lost at the next
+# update, putting nginx back on every interface.
+assert_eq '127.0.0.1' "$(saved_setting KUBEDOK_HTTP_BIND)" 'a setting given to setup.sh is saved'
+
+# A re-run given nothing starts from the saved settings and keeps the
+# installed release, even with the channel offering a newer one. It once fell
+# back to the defaults and installed whatever stable offered, unbacked-up.
+set_stable 1.0.1
+if inrun "env -u KUBEDOK_HTTP_PORT -u KUBEDOK_HTTP_BIND -u KUBEDOK_TLS KUBEDOK_LOG_LEVEL=debug \
+    ${SERVE_DIR}/setup.sh" > "${WORK}/setup3.log" 2>&1; then
+  pass 'a re-run given only KUBEDOK_LOG_LEVEL succeeds'
+else
+  fails 'a re-run given only KUBEDOK_LOG_LEVEL failed'
+  tail -20 "${WORK}/setup3.log" | sed 's/^/      /'
+fi
+assert_eq '1.0.0' "$(installed_release)" 'the re-run kept 1.0.0 although stable offers 1.0.1'
+assert_eq "127.0.0.1:${HTTP_PORT}" \
+  "$(docker inspect -f '{{json .HostConfig.PortBindings}}' kubedok-nginx | jq -r '."80/tcp"[0] | "\(.HostIp):\(.HostPort)"')" \
+  'nginx still listens on the saved address and port'
+assert_eq 'debug' "$(saved_setting KUBEDOK_LOG_LEVEL)" 'the setting the re-run was given is saved'
+assert_eq 'debug' "$(container_env kubedok-server LOG_LEVEL)" 'and the server runs with it'
+
+out="$(inrun "KUBEDOK_RELEASE=1.0.1 ${SERVE_DIR}/setup.sh" 2>&1 || true)"
+if grep -q 'setup.sh does not change releases' <<<"${out}"; then
+  pass 'a re-run asked for another release points at update.sh instead'
+else
+  fails 'a re-run asked for another release was not refused'
+  printf '%s\n' "${out}" | tail -5 | sed 's/^/      /'
+fi
+assert_eq '1.0.0' "$(installed_release)" 'the refused re-run left the install on 1.0.0'
+set_stable 1.0.0
+
+# ═══════════════════════════════════════════════════════════════════════════
+step 'TEST 2b — a TLS install re-run with nothing given stays on TLS'
+
+# A re-run once took KUBEDOK_TLS's default and found no host in the
+# environment, so it switched a TLS install to plain HTTP. A certificate for
+# the host is already in place, which also means no DNS check is needed: the
+# host only resolves inside this test.
+TLS_HOST='kubedok.test'
+inrun "set -e; d=${INSTALL_ROOT}/tls/letsencrypt/live/${TLS_HOST}; mkdir -p \$d
+  openssl req -x509 -newkey ec -pkeyopt ec_paramgen_curve:prime256v1 -nodes \
+    -keyout \$d/privkey.pem -out \$d/fullchain.pem -subj /CN=${TLS_HOST} \
+    -addext subjectAltName=DNS:${TLS_HOST} -days 2 >/dev/null 2>&1
+  chmod 644 \$d/*.pem" || abort 'could not create a test certificate'
+
+if inrun "KUBEDOK_TLS=on KUBEDOK_HOST=${TLS_HOST} ${SERVE_DIR}/setup.sh" > "${WORK}/setup-tls.log" 2>&1; then
+  pass 'setup.sh turns TLS on for a host that has a certificate'
+else
+  fails 'setup.sh could not turn TLS on'
+  tail -20 "${WORK}/setup-tls.log" | sed 's/^/      /'
+fi
+assert_eq 'true' "$(container_env kubedok-nginx KUBEDOK_TLS_ENABLED)" 'nginx serves TLS'
+assert_eq '301' "$(inrun 'curl -s -o /dev/null -w %{http_code} http://kubedok-nginx/' | tr -d '\r')" \
+  'port 80 redirects to HTTPS'
+
+if inrun "env -u KUBEDOK_TLS ${SERVE_DIR}/setup.sh" > "${WORK}/setup-tls2.log" 2>&1; then
+  pass 'a re-run given nothing succeeds'
+else
+  fails 'a re-run given nothing failed'
+  tail -20 "${WORK}/setup-tls2.log" | sed 's/^/      /'
+fi
+assert_eq 'true' "$(saved_setting KUBEDOK_TLS_ENABLED)" 'it keeps TLS on in kubedok.env'
+assert_eq 'true' "$(container_env kubedok-nginx KUBEDOK_TLS_ENABLED)" 'and nginx keeps serving TLS'
+assert_eq "${TLS_HOST}" "$(container_env kubedok-nginx KUBEDOK_SERVER_NAME)" 'for the saved host'
+
+# Back to plain HTTP for the rest of the suite. An empty variable clears the host.
+if inrun "KUBEDOK_TLS=off KUBEDOK_HOST= ${SERVE_DIR}/setup.sh" > "${WORK}/setup-tls3.log" 2>&1; then
+  pass 'setup.sh turns TLS off again'
+else
+  fails 'setup.sh could not turn TLS off'
+  tail -20 "${WORK}/setup-tls3.log" | sed 's/^/      /'
+fi
+assert_eq 'false' "$(container_env kubedok-nginx KUBEDOK_TLS_ENABLED)" 'nginx serves plain HTTP'
+assert_eq '' "$(saved_setting KUBEDOK_HOST)" 'the host given empty is cleared'
+inrun "rm -rf ${INSTALL_ROOT}/tls/letsencrypt/live/${TLS_HOST}"
+
+# ═══════════════════════════════════════════════════════════════════════════
+step 'TEST 2c — config.sh'
+
+CONFIG="${INSTALL_ROOT}/current/scripts/config.sh"
+out="$(inrun "${CONFIG}" 2>&1 | tr -d '\r' || true)"
+if grep -qE '^  KUBEDOK_LOG_LEVEL +debug ' <<<"${out}" \
+   && grep -qE '^  KUBEDOK_CLIENT_MAX_BODY_SIZE +100m \(default\) ' <<<"${out}"; then
+  pass 'config.sh lists saved settings and defaults'
+else
+  fails 'config.sh did not list the settings as expected'
+  printf '%s\n' "${out}" | head -20 | sed 's/^/      /'
+fi
+
+server_started="$(started_at kubedok-server)"
+if inrun "${CONFIG} set CLIENT_MAX_BODY_SIZE=250m" > "${WORK}/config1.log" 2>&1; then
+  pass 'config.sh set CLIENT_MAX_BODY_SIZE=250m'
+else
+  fails 'config.sh set CLIENT_MAX_BODY_SIZE=250m failed'
+  tail -20 "${WORK}/config1.log" | sed 's/^/      /'
+fi
+assert_eq '250m' "$(saved_setting KUBEDOK_CLIENT_MAX_BODY_SIZE)" 'the value is saved in kubedok.env'
+assert_eq '250m' "$(inrun "sed -n 's/^KUBEDOK_CLIENT_MAX_BODY_SIZE=//p' ${INSTALL_ROOT}/config/compose.env" | tr -d '\r')" \
+  'and written into compose.env'
+assert_eq '250m' "$(container_env kubedok-nginx KUBEDOK_CLIENT_MAX_BODY_SIZE)" 'nginx was restarted with it'
+assert_eq "${server_started}" "$(started_at kubedok-server)" 'the server, which does not read it, was left alone'
+assert_eq '250m' "$(inrun "${CONFIG} get client_max_body_size" | tr -d '\r')" 'config.sh get reads it back'
+
+if inrun "${CONFIG} unset LOG_LEVEL" > "${WORK}/config2.log" 2>&1; then
+  pass 'config.sh unset LOG_LEVEL'
+else
+  fails 'config.sh unset LOG_LEVEL failed'
+  tail -20 "${WORK}/config2.log" | sed 's/^/      /'
+fi
+assert_fails 'the line is gone from kubedok.env' \
+  docker exec "${RUNNER}" grep -q '^KUBEDOK_LOG_LEVEL=' "${INSTALL_ROOT}/config/kubedok.env"
+assert_eq 'log' "$(container_env kubedok-server LOG_LEVEL)" 'the server is back on the default'
+
+config_sum="$(inrun "sha256sum ${INSTALL_ROOT}/config/kubedok.env" | tr -d '\r')"
+for refused in 'set LOG_LEVEL=loud|is one of' 'set HOST=x.example.com|setup.sh changes it' \
+               'set RELEASE=1.0.1|update.sh changes the release' 'set NOT_A_SETTING=1|not a Kubedok setting' \
+               'set SYNC_INTERVAL_SECS=5|agent.env' "set TRUST_PROXY=a\\ b|cannot hold"; do
+  args="${refused%%|*}" reason="${refused#*|}"
+  if out="$(inrun "${CONFIG} ${args}" 2>&1)"; then
+    fails "config.sh ${args} unexpectedly succeeded"
+  elif grep -q -- "${reason}" <<<"${out}"; then
+    pass "config.sh ${args} is refused: ${reason}"
+  else
+    fails "config.sh ${args} was refused without saying '${reason}'"
+    printf '%s\n' "${out}" | tail -3 | sed 's/^/      /'
+  fi
+done
+assert_eq "${config_sum}" "$(inrun "sha256sum ${INSTALL_ROOT}/config/kubedok.env" | tr -d '\r')" \
+  'refused changes leave kubedok.env as it was'
+
+if inrun "${CONFIG} set JWT_EXPIRES_IN=30m --no-restart" > "${WORK}/config3.log" 2>&1; then
+  pass 'config.sh set --no-restart'
+else
+  fails 'config.sh set --no-restart failed'
+  tail -20 "${WORK}/config3.log" | sed 's/^/      /'
+fi
+assert_eq '15m' "$(container_env kubedok-server JWT_EXPIRES_IN)" '--no-restart leaves the server as it was'
+inrun "${INSTALL_ROOT}/current/scripts/restart.sh server" >/dev/null 2>&1 || true
+assert_eq '30m' "$(container_env kubedok-server JWT_EXPIRES_IN)" 'restart.sh then applies the saved value'
+
+# ═══════════════════════════════════════════════════════════════════════════
+step 'TEST 2d — restart.sh restarts the agent from its own settings'
+
+# The agent keeps its image pin and settings in its own agent.env.
+# restart.sh used to recreate it from the control plane's compose.env, which
+# swapped in the release's agent image and dropped its host address. A
+# stand-in container: what is under test is which files restart.sh uses.
+AGENT_ROOT="${WORK}/opt-kubedok-agent"
+mkdir -p "${AGENT_ROOT}"
+cat > "${AGENT_ROOT}/docker-compose.yml" <<'YML'
+name: kubedok-agent
+services:
+  agent:
+    image: ${KUBEDOK_IMAGE_AGENT:?KUBEDOK_IMAGE_AGENT is required}
+    container_name: kubedok-agent
+    command: ["sleep", "infinity"]
+    # The real agent uses the host network; this leaves no network behind.
+    network_mode: none
+    environment:
+      KUBEDOK_API_URL: ${KUBEDOK_API_URL:?KUBEDOK_API_URL is required}
+      KUBEDOK_HOST_ADDRESS: ${KUBEDOK_HOST_ADDRESS:-}
+YML
+printf 'KUBEDOK_IMAGE_AGENT=debian:bookworm-slim\nKUBEDOK_API_URL=http://agent-api.test\nKUBEDOK_HOST_ADDRESS=10.9.8.7\n' \
+  > "${AGENT_ROOT}/agent.env"
+if inrun "KUBEDOK_AGENT_ROOT=${AGENT_ROOT} ${INSTALL_ROOT}/current/scripts/restart.sh agent" > "${WORK}/agent.log" 2>&1; then
+  pass 'restart.sh agent completed'
+else
+  fails 'restart.sh agent failed'
+  tail -20 "${WORK}/agent.log" | sed 's/^/      /'
+fi
+assert_eq 'debian:bookworm-slim' "$(docker inspect -f '{{.Config.Image}}' kubedok-agent 2>/dev/null)" \
+  "the agent runs agent.env's image"
+assert_eq '10.9.8.7' "$(container_env kubedok-agent KUBEDOK_HOST_ADDRESS)" "and keeps agent.env's host address"
+docker rm -f kubedok-agent >/dev/null 2>&1 || true
+
 # ═══════════════════════════════════════════════════════════════════════════
 step 'TEST 3 — backup.sh'
 
@@ -433,6 +623,13 @@ assert_ok "1.0.1's update.sh is the published one" \
 
 jwt_after_update="$(inrun "cat ${INSTALL_ROOT}/secrets/jwt-secret" | tr -d '\r\n')"
 assert_eq "${jwt_before}" "${jwt_after_update}" 'the update did not rotate jwt-secret'
+
+# update.sh rebuilds compose.env from kubedok.env, so what config.sh saved holds.
+assert_eq '250m' "$(container_env kubedok-nginx KUBEDOK_CLIENT_MAX_BODY_SIZE)" \
+  'nginx keeps the body size config.sh set'
+assert_eq '30m' "$(container_env kubedok-server JWT_EXPIRES_IN)" 'the server keeps the token lifetime config.sh set'
+assert_ok "the 1.0.1 release tree carries config.sh" \
+  docker exec "${RUNNER}" test -x "${INSTALL_ROOT}/releases/1.0.1/scripts/config.sh"
 
 # ═══════════════════════════════════════════════════════════════════════════
 step 'TEST 5 — update guards'

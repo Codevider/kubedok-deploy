@@ -22,6 +22,8 @@ KUBEDOK_SECRETS_DIR="${KUBEDOK_ROOT}/secrets"
 KUBEDOK_BACKUPS_DIR="${KUBEDOK_ROOT}/backups"
 KUBEDOK_TLS_DIR="${KUBEDOK_ROOT}/tls"
 KUBEDOK_LOCK_FILE="${KUBEDOK_ROOT}/.lock"
+# The agent is a separate install with its own settings (agent-install.sh).
+KUBEDOK_AGENT_ROOT="${KUBEDOK_AGENT_ROOT:-/opt/kubedok-agent}"
 
 KUBEDOK_RELEASE_BASE_URL="${KUBEDOK_RELEASE_BASE_URL:-https://raw.githubusercontent.com/glikaj/kubedok-deploy/main}"
 
@@ -104,22 +106,149 @@ load_config() {
   set +a
 }
 
-# Upsert one KEY=VALUE in the config file, preserving everything else.
+# Loads kubedok.env under the caller's environment, for setup.sh: a setting
+# given on the command line wins over the saved one. GIVEN_SETTINGS names the
+# settings the caller gave, so they can be saved in place of the old values.
+GIVEN_SETTINGS=""
+load_config_under_env() {
+  local key pair given=()
+  GIVEN_SETTINGS=""
+  for key in ${KUBEDOK_SETTINGS} ${KUBEDOK_OWNED_SETTINGS}; do
+    if [ -n "${!key+x}" ]; then
+      GIVEN_SETTINGS="${GIVEN_SETTINGS:+${GIVEN_SETTINGS} }${key}"
+      given+=("${key}=${!key}")
+    fi
+  done
+  load_config
+  for pair in ${given[@]+"${given[@]}"}; do
+    export "${pair?}"
+  done
+}
+
+setting_given() { [[ " ${GIVEN_SETTINGS} " == *" $1 "* ]]; }
+
+config_has() { grep -q "^$1=" "${KUBEDOK_CONFIG_FILE}" 2>/dev/null; }
+
+# The saved value, as the scripts read it: sourced, so quotes in a hand-edited
+# line come out the way load_config sees them. Empty when it is not saved.
+saved_config_value() {
+  config_has "$1" || return 0
+  (
+    unset "$1"
+    # shellcheck disable=SC1090
+    . "${KUBEDOK_CONFIG_FILE}"
+    printf '%s' "${!1-}"
+  )
+}
+
+# Set one KEY=VALUE in the config file, in place, keeping every other line
+# and the order they are in.
 set_config() {
-  local key="$1" value="$2"
+  local key="$1" value="$2" tmp
   mkdir -p "${KUBEDOK_CONFIG_DIR}"
   touch "${KUBEDOK_CONFIG_FILE}"
-  if grep -q "^${key}=" "${KUBEDOK_CONFIG_FILE}" 2>/dev/null; then
-    local tmp
-    tmp="$(mktemp)"
-    grep -v "^${key}=" "${KUBEDOK_CONFIG_FILE}" > "${tmp}"
-    printf '%s=%s\n' "${key}" "${value}" >> "${tmp}"
-    cat "${tmp}" > "${KUBEDOK_CONFIG_FILE}"
-    rm -f "${tmp}"
-  else
-    printf '%s=%s\n' "${key}" "${value}" >> "${KUBEDOK_CONFIG_FILE}"
-  fi
+  tmp="$(mktemp)"
+  KEY="${key}" VALUE="${value}" awk '
+    BEGIN { prefix = ENVIRON["KEY"] "="; line = prefix ENVIRON["VALUE"] }
+    index($0, prefix) == 1 { if (!done) print line; done = 1; next }
+    { print }
+    END { if (!done) print line }
+  ' "${KUBEDOK_CONFIG_FILE}" > "${tmp}"
+  cat "${tmp}" > "${KUBEDOK_CONFIG_FILE}"
+  rm -f "${tmp}"
   chmod 600 "${KUBEDOK_CONFIG_FILE}"
+}
+
+unset_config() {
+  local key="$1" tmp
+  [ -f "${KUBEDOK_CONFIG_FILE}" ] || return 0
+  tmp="$(mktemp)"
+  KEY="${key}" awk 'index($0, ENVIRON["KEY"] "=") != 1' "${KUBEDOK_CONFIG_FILE}" > "${tmp}"
+  cat "${tmp}" > "${KUBEDOK_CONFIG_FILE}"
+  rm -f "${tmp}"
+  chmod 600 "${KUBEDOK_CONFIG_FILE}"
+}
+
+# ── Settings ─────────────────────────────────────────────────────────────────
+# What kubedok.env holds. config.sh changes these on a running install and
+# restarts what reads them; setup.sh saves any of them it is given.
+KUBEDOK_SETTINGS="KUBEDOK_LOG_LEVEL KUBEDOK_CORS_ORIGIN KUBEDOK_JWT_EXPIRES_IN KUBEDOK_TRUST_PROXY
+  KUBEDOK_CLIENT_MAX_BODY_SIZE KUBEDOK_HTTP_PORT KUBEDOK_HTTPS_PORT KUBEDOK_HTTP_BIND KUBEDOK_HTTPS_BIND
+  KUBEDOK_PUBLIC_POSTGRES KUBEDOK_POSTGRES_BIND KUBEDOK_POSTGRES_PORT KUBEDOK_LETSENCRYPT_EMAIL"
+
+# Saved as well, but each is changed by its own script: setup.sh decides the
+# host and TLS, since a certificate is involved; update.sh moves the release;
+# and the database was created with its user and name, which never change.
+KUBEDOK_OWNED_SETTINGS="KUBEDOK_HOST KUBEDOK_TLS KUBEDOK_TLS_ENABLED KUBEDOK_RELEASE
+  KUBEDOK_POSTGRES_USER KUBEDOK_POSTGRES_DB"
+
+# The container that reads a setting, restarted to apply it, or `none` for one
+# that only a script reads, the next time it runs. Fails for anything else.
+setting_applies_to() {
+  case "$1" in
+    KUBEDOK_LOG_LEVEL|KUBEDOK_CORS_ORIGIN|KUBEDOK_JWT_EXPIRES_IN|KUBEDOK_TRUST_PROXY)
+      printf 'server' ;;
+    KUBEDOK_CLIENT_MAX_BODY_SIZE|KUBEDOK_HTTP_PORT|KUBEDOK_HTTPS_PORT|KUBEDOK_HTTP_BIND|KUBEDOK_HTTPS_BIND)
+      printf 'nginx' ;;
+    KUBEDOK_PUBLIC_POSTGRES|KUBEDOK_POSTGRES_BIND|KUBEDOK_POSTGRES_PORT)
+      printf 'postgres' ;;
+    KUBEDOK_LETSENCRYPT_EMAIL)
+      printf 'none' ;;
+    *) return 1 ;;
+  esac
+}
+
+# Dies unless VALUE is one KEY can take. Empty always is: it means the default.
+# kubedok.env is sourced by bash and compose.env is read by Compose, so no
+# value may contain anything either would need quoted.
+check_setting() {
+  local key="$1" value="$2"
+  local plain='^[A-Za-z0-9_.:/@,*=+%-]*$'
+  local port='^[1-9][0-9]{0,4}$'
+  local ipv4='^[0-9]{1,3}(\.[0-9]{1,3}){3}$'
+
+  [ -n "${value}" ] || return 0
+  [[ "${value}" =~ ${plain} ]] \
+    || die "${key}: '${value}' has a character a setting cannot hold. Use letters, digits and _ . : / @ , * = + % - only."
+
+  case "${key}" in
+    KUBEDOK_LOG_LEVEL)
+      case "${value}" in error|warn|log|debug|verbose) ;;
+        *) die "${key} is one of: error, warn, log, debug, verbose (got '${value}')." ;;
+      esac ;;
+    KUBEDOK_CORS_ORIGIN)
+      [ "${value}" = "*" ] || [[ "${value}" =~ ^https?://[A-Za-z0-9.-]+(:[0-9]+)?(,https?://[A-Za-z0-9.-]+(:[0-9]+)?)*$ ]] \
+        || die "${key} is * or a comma-separated list of origins such as https://app.example.com (got '${value}')." ;;
+    KUBEDOK_JWT_EXPIRES_IN)
+      # A bare number would be read as milliseconds.
+      [[ "${value}" =~ ^[1-9][0-9]*(s|m|h|d|w|y)$ ]] \
+        || die "${key} is a number with a unit, s, m, h, d, w or y, such as 15m (got '${value}')." ;;
+    KUBEDOK_CLIENT_MAX_BODY_SIZE)
+      [[ "${value}" =~ ^[0-9]+[kKmMgG]?$ ]] \
+        || die "${key} is an nginx size such as 100m or 1g (got '${value}')." ;;
+    KUBEDOK_HTTP_PORT|KUBEDOK_HTTPS_PORT|KUBEDOK_POSTGRES_PORT)
+      [[ "${value}" =~ ${port} ]] && [ "${value}" -le 65535 ] \
+        || die "${key} is a port, 1 to 65535 (got '${value}')." ;;
+    KUBEDOK_HTTP_BIND|KUBEDOK_HTTPS_BIND|KUBEDOK_POSTGRES_BIND)
+      [[ "${value}" =~ ${ipv4} ]] \
+        || die "${key} is an IPv4 address to listen on, such as 0.0.0.0 or 127.0.0.1 (got '${value}')." ;;
+    KUBEDOK_PUBLIC_POSTGRES|KUBEDOK_TLS_ENABLED)
+      case "${value}" in true|false) ;; *) die "${key} is true or false (got '${value}')." ;; esac ;;
+    KUBEDOK_LETSENCRYPT_EMAIL)
+      [[ "${value}" =~ ^[^@]+@[^@]+\.[^@]+$ ]] \
+        || die "${key} is an email address (got '${value}')." ;;
+    KUBEDOK_HOST)
+      [[ "${value}" =~ ^[A-Za-z0-9]([A-Za-z0-9.-]*[A-Za-z0-9])?$ ]] \
+        || die "${key} is a DNS name such as kubedok.example.com (got '${value}')." ;;
+    KUBEDOK_TLS)
+      case "${value}" in off|on|auto) ;; *) die "${key} is off, on or auto (got '${value}')." ;; esac ;;
+    KUBEDOK_RELEASE)
+      is_semver "${value}" || [[ "${value}" =~ ^[a-z][a-z0-9-]*$ ]] \
+        || die "${key} is a channel name such as stable, or a version X.Y.Z (got '${value}')." ;;
+    KUBEDOK_POSTGRES_USER|KUBEDOK_POSTGRES_DB)
+      [[ "${value}" =~ ^[a-z_][a-z0-9_]*$ ]] \
+        || die "${key} is lower-case letters, digits and _ (got '${value}')." ;;
+  esac
 }
 
 # ── Secrets ──────────────────────────────────────────────────────────────────
@@ -322,10 +451,11 @@ ensure_networks() {
 # ── Compose ──────────────────────────────────────────────────────────────────
 # Writes the env file every compose invocation is driven from: install paths,
 # the resolved image digests, and the user's config. Regenerated from the
-# manifest on each run so it can never drift from the active release.
+# manifest on each run so it can never drift from the active release. A second
+# argument writes it somewhere else, which config.sh reads its defaults from.
 write_compose_env() {
   local manifest="$1"
-  local dest="${KUBEDOK_CONFIG_DIR}/compose.env"
+  local dest="${2:-${KUBEDOK_CONFIG_DIR}/compose.env}"
 
   mkdir -p "${KUBEDOK_CONFIG_DIR}"
 
@@ -372,6 +502,9 @@ write_compose_env() {
 }
 
 compose_env_file() { printf '%s/compose.env' "${KUBEDOK_CONFIG_DIR}"; }
+
+# Where certbot keeps a host's certificate, and where nginx reads it.
+certificate_path() { printf '%s/letsencrypt/live/%s/fullchain.pem' "${KUBEDOK_TLS_DIR}" "$1"; }
 
 # compose <project> <compose args...>
 # project is one of: postgres | server | nginx | agent

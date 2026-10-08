@@ -219,7 +219,10 @@ case "${MODE}" in
 
   renew)
     log "Renewing certificates if due"
-    args=(renew --webroot -w /var/www/certbot --non-interactive)
+    # Only the host nginx serves. A certificate for a host the install used to
+    # have stops validating once its DNS moves away, and its failure would
+    # fail the run before nginx reloaded the one in use.
+    args=(renew --cert-name "${KUBEDOK_HOST}" --webroot -w /var/www/certbot --non-interactive)
     [ "${DRY_RUN}" = "true" ] && args+=(--dry-run)
     [ "${FORCE}" = "true" ] && args+=(--force-renewal)
 

@@ -4,7 +4,10 @@
 #
 # Idempotent and executable — run it, do not source it. Re-running against an
 # existing install is safe: it never regenerates secrets, never touches the
-# database volume, and never overwrites configuration you have edited.
+# database volume, and keeps the installed release (update.sh moves that) and
+# the saved settings. A variable given to a re-run changes that setting and is
+# saved, which is how the host and TLS mode change after install; config.sh
+# changes the rest.
 #
 #   git clone https://github.com/glikaj/kubedok-deploy.git kubedok
 #   cd kubedok
@@ -52,14 +55,24 @@ HINT
   exit 1
 fi
 
+# ── 1. Root ──────────────────────────────────────────────────────────────────
+require_root "$@"
+
+# ── Settings ─────────────────────────────────────────────────────────────────
+# Read before any default applies. A re-run starts from the saved settings, so
+# one given no variables changes nothing: it once fell back to the defaults
+# here, which turned TLS off and moved to the newest release. A variable given
+# on the command line wins over the saved value and is saved in its place.
+load_config_under_env
+for key in ${GIVEN_SETTINGS}; do
+  check_setting "${key}" "${!key}"
+done
+
 KUBEDOK_TLS="${KUBEDOK_TLS:-auto}"
 KUBEDOK_RELEASE="${KUBEDOK_RELEASE:-stable}"
 KUBEDOK_ENABLE_AGENT="${KUBEDOK_ENABLE_AGENT:-false}"
 KUBEDOK_PUBLIC_POSTGRES="${KUBEDOK_PUBLIC_POSTGRES:-false}"
 KUBEDOK_SKIP_DEPS="${KUBEDOK_SKIP_DEPS:-false}"
-
-# ── 1. Root ──────────────────────────────────────────────────────────────────
-require_root "$@"
 
 # ── 2. Supported platform ────────────────────────────────────────────────────
 check_platform() {
@@ -165,15 +178,7 @@ resolve_tls() {
     on)
       [ -n "${KUBEDOK_HOST:-}" ] \
         || die "KUBEDOK_TLS=on requires KUBEDOK_HOST to be a DNS name you control."
-      if ! dns_points_here "${KUBEDOK_HOST}"; then
-        if [ "${KUBEDOK_TLS_SKIP_DNS_CHECK:-false}" = "true" ]; then
-          warn "DNS does not point here, but KUBEDOK_TLS_SKIP_DNS_CHECK=true — continuing."
-          [ -n "${DNS_CDN}" ] && warn "Traffic appears to route through ${DNS_CDN}; the ACME challenge must reach this host through it."
-        else
-          explain_dns_failure "${KUBEDOK_HOST}"
-          exit 1
-        fi
-      fi
+      check_tls_host
       KUBEDOK_TLS_ENABLED=true
       ok "TLS enabled for ${KUBEDOK_HOST}"
       ;;
@@ -181,13 +186,10 @@ resolve_tls() {
       if [ -z "${KUBEDOK_HOST:-}" ]; then
         KUBEDOK_TLS_ENABLED=false
         warn "No KUBEDOK_HOST set — serving HTTP only. No self-signed certificate is created."
-      elif ! dns_points_here "${KUBEDOK_HOST}" \
-           && [ "${KUBEDOK_TLS_SKIP_DNS_CHECK:-false}" != "true" ]; then
+      else
         # A hostname was supplied, so silently downgrading would hide a DNS
         # mistake behind an insecure install.
-        explain_dns_failure "${KUBEDOK_HOST}"
-        exit 1
-      else
+        check_tls_host
         KUBEDOK_TLS_ENABLED=true
         ok "TLS enabled for ${KUBEDOK_HOST}"
       fi
@@ -198,6 +200,27 @@ resolve_tls() {
   esac
 
   export KUBEDOK_TLS_ENABLED
+}
+
+# Returns when KUBEDOK_HOST can be served over TLS from here; explains why not
+# and exits otherwise. A host that already has a certificate needs no DNS
+# check: the check guards issuance, and a re-run must not stop because the
+# record has been proxied since.
+check_tls_host() {
+  if [ -f "$(certificate_path "${KUBEDOK_HOST}")" ]; then
+    ok "${KUBEDOK_HOST} already has a certificate"
+    return 0
+  fi
+  dns_points_here "${KUBEDOK_HOST}" && return 0
+  if [ "${KUBEDOK_TLS_SKIP_DNS_CHECK:-false}" = "true" ]; then
+    warn "DNS does not point here, but KUBEDOK_TLS_SKIP_DNS_CHECK=true — continuing."
+    if [ -n "${DNS_CDN}" ]; then
+      warn "Traffic appears to route through ${DNS_CDN}; the ACME challenge must reach this host through it."
+    fi
+    return 0
+  fi
+  explain_dns_failure "${KUBEDOK_HOST}"
+  exit 1
 }
 
 # True when the hostname resolves to an address this machine holds.
@@ -324,19 +347,35 @@ create_layout() {
 
 # ── 6. Release manifest ──────────────────────────────────────────────────────
 install_release() {
-  log "Resolving release '${KUBEDOK_RELEASE}'"
+  local installed
+  installed="$(current_release 2>/dev/null || true)"
 
-  local tmp_manifest
-  tmp_manifest="$(mktemp)"
-  resolve_manifest "${KUBEDOK_RELEASE}" "${tmp_manifest}" >/dev/null
+  if [ -n "${installed}" ] && [ -f "${KUBEDOK_RELEASES_DIR}/${installed}/release.json" ]; then
+    # A re-run keeps the installed release and the digests its manifest
+    # pinned, even when that version has been published again since. Moving
+    # to another release takes a backup first, which is update.sh's job.
+    if setting_given KUBEDOK_RELEASE && [ "${KUBEDOK_RELEASE}" != "${installed}" ]; then
+      die "Kubedok ${installed} is installed here, and setup.sh does not change releases. Run: ${KUBEDOK_CURRENT_LINK}/scripts/update.sh ${KUBEDOK_RELEASE}"
+    fi
+    RELEASE_VERSION="${installed}"
+    RELEASE_DIR="${KUBEDOK_RELEASES_DIR}/${RELEASE_VERSION}"
+    ok "Release ${RELEASE_VERSION}, already installed"
+  else
+    log "Resolving release '${KUBEDOK_RELEASE}'"
 
-  RELEASE_VERSION="$(manifest_field release "${tmp_manifest}")"
-  ok "Release ${RELEASE_VERSION}"
+    local tmp_manifest
+    tmp_manifest="$(mktemp)"
+    resolve_manifest "${KUBEDOK_RELEASE}" "${tmp_manifest}" >/dev/null
 
-  RELEASE_DIR="${KUBEDOK_RELEASES_DIR}/${RELEASE_VERSION}"
+    RELEASE_VERSION="$(manifest_field release "${tmp_manifest}")"
+    ok "Release ${RELEASE_VERSION}"
+
+    RELEASE_DIR="${KUBEDOK_RELEASES_DIR}/${RELEASE_VERSION}"
+    mkdir -p "${RELEASE_DIR}"
+    mv "${tmp_manifest}" "${RELEASE_DIR}/release.json"
+    chmod 644 "${RELEASE_DIR}/release.json"
+  fi
   mkdir -p "${RELEASE_DIR}/compose" "${RELEASE_DIR}/scripts"
-  mv "${tmp_manifest}" "${RELEASE_DIR}/release.json"
-  chmod 644 "${RELEASE_DIR}/release.json"
 
   # Ship the compose files and scripts that belong to this release, so a
   # rollback restores the tooling as well as the images.
@@ -350,7 +389,7 @@ install_release() {
   done
 
   for file in common.sh doctor.sh backup.sh restore.sh status.sh logs.sh \
-              restart.sh rollback.sh agent-install.sh agent-update.sh \
+              restart.sh config.sh rollback.sh agent-install.sh agent-update.sh \
               cert-renew.sh uninstall.sh; do
     if [ -f "${SCRIPT_DIR}/scripts/${file}" ]; then
       install -m 755 "${SCRIPT_DIR}/scripts/${file}" "${RELEASE_DIR}/scripts/${file}"
@@ -385,20 +424,23 @@ generate_secrets() {
 write_configuration() {
   log "Writing configuration"
 
-  # Only seed values that are not already present, so re-running setup.sh
-  # never clobbers hand-edited settings.
+  # Every setting this run was given is saved. update.sh and the other scripts
+  # read kubedok.env alone, so one that was only in the environment, such as
+  # KUBEDOK_HTTP_BIND, was lost at the next update.
   local key
-  for key in KUBEDOK_HOST KUBEDOK_TLS KUBEDOK_TLS_ENABLED KUBEDOK_LETSENCRYPT_EMAIL \
-             KUBEDOK_RELEASE KUBEDOK_PUBLIC_POSTGRES KUBEDOK_HTTP_PORT KUBEDOK_HTTPS_PORT; do
-    if ! grep -q "^${key}=" "${KUBEDOK_CONFIG_FILE}" 2>/dev/null; then
-      set_config "${key}" "${!key:-}"
-    fi
+  for key in ${GIVEN_SETTINGS}; do
+    set_config "${key}" "${!key}"
   done
 
-  # These two always follow the current run: they are decisions, not defaults.
+  # Listed even when empty, so the file shows what there is to set.
+  for key in KUBEDOK_HOST KUBEDOK_LETSENCRYPT_EMAIL KUBEDOK_RELEASE KUBEDOK_PUBLIC_POSTGRES \
+             KUBEDOK_HTTP_PORT KUBEDOK_HTTPS_PORT; do
+    config_has "${key}" || set_config "${key}" "${!key:-}"
+  done
+
+  # Decided by this run, from KUBEDOK_TLS and the host.
   set_config KUBEDOK_TLS "${KUBEDOK_TLS}"
   set_config KUBEDOK_TLS_ENABLED "${KUBEDOK_TLS_ENABLED}"
-  [ -n "${KUBEDOK_HOST:-}" ] && set_config KUBEDOK_HOST "${KUBEDOK_HOST}"
 
   chmod 600 "${KUBEDOK_CONFIG_FILE}"
   ok "Configuration at ${KUBEDOK_CONFIG_FILE}"
@@ -525,6 +567,7 @@ print_summary() {
   printf '  Status           %s/status.sh\n' "${s}"
   printf '  Logs             %s/logs.sh [postgres|server|nginx|agent]\n' "${s}"
   printf '  Restart          %s/restart.sh [component|all]\n' "${s}"
+  printf '  Settings         %s/config.sh\n' "${s}"
   printf '  Health check     %s/doctor.sh\n' "${s}"
   printf '  Backup           %s/backup.sh\n' "${s}"
   printf '  Update           %s/update.sh\n' "${s}"

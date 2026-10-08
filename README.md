@@ -32,8 +32,14 @@ it serves HTTP only, with a warning rather than a self-signed certificate.
 `setup.sh` installs Docker if needed, generates secrets, pulls the release
 images by digest, brings up PostgreSQL, the server, and nginx on private
 networks, and obtains a Let's Encrypt certificate. It is idempotent — running
-it again never regenerates a secret, touches the database, or overwrites
-settings you have edited.
+it again never regenerates a secret or touches the database, and keeps the
+installed release and the saved settings. A variable given to a re-run
+changes that setting and is saved, which is how the host and TLS mode change
+later:
+
+```bash
+sudo KUBEDOK_HOST=new.example.com ./setup.sh
+```
 
 ### Behind Cloudflare or another CDN
 
@@ -73,7 +79,21 @@ sudo /opt/kubedok/current/scripts/doctor.sh          # diagnose a problem
 sudo /opt/kubedok/current/scripts/logs.sh server     # logs
 sudo /opt/kubedok/current/scripts/backup.sh          # back up
 sudo /opt/kubedok/current/scripts/rollback.sh        # undo an update
+sudo /opt/kubedok/current/scripts/config.sh          # show the settings
 ```
+
+Change a setting with `config.sh`. It checks the value, saves it in
+`/opt/kubedok/config/kubedok.env`, and restarts only the containers that read
+it:
+
+```bash
+sudo /opt/kubedok/current/scripts/config.sh set LOG_LEVEL=debug
+sudo /opt/kubedok/current/scripts/config.sh unset LOG_LEVEL   # back to the default
+```
+
+The host and TLS mode change with a `setup.sh` re-run, and the release with
+`update.sh`. An agent keeps its settings in `/opt/kubedok-agent/agent.env`:
+edit it there, then run `restart.sh agent`.
 
 Each release installs its own copy of the scripts, `update.sh` included, in
 `/opt/kubedok/releases/<version>/scripts/`, and `current` points at the release
@@ -114,6 +134,7 @@ scripts/
   status.sh                 Containers, health, release, database.
   logs.sh                   Logs, one component or all.
   restart.sh                Restart, in dependency order.
+  config.sh                 Show and change settings; restarts what reads them.
   doctor.sh                 Docker, DNS, ports, disk, memory, TLS, isolation.
   backup.sh                 Database dump plus secrets and configuration.
   restore.sh                Guarded restore. Takes a safety backup first.
