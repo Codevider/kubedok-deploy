@@ -5,6 +5,7 @@
 #   sudo /opt/kubedok/current/scripts/update.sh           # latest on the configured channel
 #   sudo /opt/kubedok/current/scripts/update.sh 1.3.0     # a specific release
 #   sudo /opt/kubedok/current/scripts/update.sh --check   # report only, change nothing
+#   sudo /opt/kubedok/current/scripts/update.sh --force   # also when already on it: pull, recreate
 #
 # Every release tree carries its own copy beside common.sh. From a clone of
 # the repository, ./update.sh at its root works the same way.
@@ -34,12 +35,14 @@ else
 fi
 
 CHECK_ONLY=false
+FORCE=false
 TARGET_REF=""
 
 while [ $# -gt 0 ]; do
   case "$1" in
     --check) CHECK_ONLY=true; shift ;;
-    -h|--help) sed -n '2,18p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -f|--force) FORCE=true; shift ;;
+    -h|--help) sed -n '2,19p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) die "Unknown option: $1" ;;
     *) TARGET_REF="$1"; shift ;;
   esac
@@ -78,12 +81,32 @@ NEW_MANIFEST_TMP="$(mktemp)"
 resolve_manifest "${TARGET_REF}" "${NEW_MANIFEST_TMP}" >/dev/null
 NEW_VERSION="$(manifest_field release "${NEW_MANIFEST_TMP}")"
 
+# --force installs the installed release again, through every step below: the
+# backup, the pull, the smoke tests, and a restore when they fail. Its manifest
+# is fetched afresh, so a version published again since is installed with its
+# new images; with the same images, the server and nginx are recreated anyway.
+REINSTALL=false
 if [ "${NEW_VERSION}" = "${CURRENT_VERSION}" ]; then
-  ok "Already on ${CURRENT_VERSION}. Nothing to do."
-  exit 0
+  if [ "${FORCE}" != "true" ]; then
+    ok "Already on ${CURRENT_VERSION}. Nothing to do. --force installs it again."
+    exit 0
+  fi
+  REINSTALL=true
+  republished=""
+  for component in server nginx postgres; do
+    if [ "$(jq -r --arg c "${component}" '.images[$c]' "${CURRENT_MANIFEST}")" \
+         != "$(manifest_image "${component}" "${NEW_MANIFEST_TMP}")" ]; then
+      republished="${republished:+${republished}, }${component}"
+    fi
+  done
+  if [ -n "${republished}" ]; then
+    log "Installing ${CURRENT_VERSION} again: it was published again since, with new images for ${republished}"
+  else
+    log "Installing ${CURRENT_VERSION} again, with the same images"
+  fi
+else
+  log "Target release: ${NEW_VERSION}"
 fi
-
-log "Target release: ${NEW_VERSION}"
 
 # Refuse a downgrade unless it is asked for explicitly by version, because a
 # downgrade cannot undo migrations the newer release already applied.
@@ -222,9 +245,16 @@ else
   debug "PostgreSQL image unchanged, leaving it running"
 fi
 
+# Compose leaves a container alone when nothing about it changed, which
+# --force is asked to override. The database keeps the rule above.
+RECREATE=()
+if [ "${FORCE}" = "true" ]; then
+  RECREATE=(--force-recreate)
+fi
+
 # ── 7 + 8. Server first ──────────────────────────────────────────────────────
 log "Updating the server"
-compose server up -d || restore_previous
+compose server up -d ${RECREATE[@]+"${RECREATE[@]}"} || restore_previous
 wait_for_container_health kubedok-server 300 || restore_previous
 
 if ! wait_for_http "$(local_base_url)/api/health" 120; then
@@ -235,7 +265,7 @@ ok "Server ${NEW_VERSION} is healthy"
 
 # ── 9. nginx ─────────────────────────────────────────────────────────────────
 log "Updating nginx"
-compose nginx up -d || restore_previous
+compose nginx up -d ${RECREATE[@]+"${RECREATE[@]}"} || restore_previous
 wait_for_container_health kubedok-nginx 120 || restore_previous
 ok "nginx updated"
 
@@ -275,13 +305,19 @@ ok "  database is connected"
 # goes on exit. Then `previous` moves before `current`: an interruption between
 # the two leaves rollback.sh nothing to do, rather than a target one release
 # further back than the operator expects.
+#
+# Installed again, the replaced tree is the one `current` names, which points
+# at nothing between the two moves. The lock keeps the other lifecycle scripts
+# out meanwhile, and `previous` stays where it was: the release before this one.
 if [ -e "${NEW_RELEASE_DIR}" ]; then
   mv "${NEW_RELEASE_DIR}" "${KUBEDOK_STAGING_DIR}/replaced-${NEW_VERSION}"
 fi
 mv "${STAGED_DIR}" "${NEW_RELEASE_DIR}"
 # compose.env names the manifest it was generated from: name the one that stays.
 write_compose_env "${NEW_RELEASE_DIR}/release.json" >/dev/null
-set_previous_release "${CURRENT_VERSION}"
+if [ "${REINSTALL}" != "true" ]; then
+  set_previous_release "${CURRENT_VERSION}"
+fi
 set_current_release "${NEW_VERSION}"
 set_config KUBEDOK_RELEASE "${TARGET_REF}"
 ok "Recorded ${NEW_VERSION} as current"
@@ -300,9 +336,17 @@ if [ "${#all_releases[@]}" -gt "${KEEP}" ]; then
 fi
 
 printf '\n'
-ok "Updated ${CURRENT_VERSION} → ${NEW_VERSION}"
-printf '\n'
-printf '  Rollback     %s/scripts/rollback.sh  (back to %s)\n' "${KUBEDOK_CURRENT_LINK}" "${CURRENT_VERSION}"
+if [ "${REINSTALL}" = "true" ]; then
+  ok "Installed ${NEW_VERSION} again"
+  printf '\n'
+  if ROLLBACK_TARGET="$(previous_release)"; then
+    printf '  Rollback     %s/scripts/rollback.sh  (back to %s)\n' "${KUBEDOK_CURRENT_LINK}" "${ROLLBACK_TARGET}"
+  fi
+else
+  ok "Updated ${CURRENT_VERSION} → ${NEW_VERSION}"
+  printf '\n'
+  printf '  Rollback     %s/scripts/rollback.sh  (back to %s)\n' "${KUBEDOK_CURRENT_LINK}" "${CURRENT_VERSION}"
+fi
 printf '  Backup taken %s\n' "${BACKUP_PATH}"
 printf '  Status       %s/scripts/status.sh\n' "${KUBEDOK_CURRENT_LINK}"
 printf '\n'

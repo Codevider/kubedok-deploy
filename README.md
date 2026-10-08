@@ -74,6 +74,7 @@ Everything installs under `/opt/kubedok`.
 ```bash
 sudo /opt/kubedok/current/scripts/update.sh --check  # is there an update?
 sudo /opt/kubedok/current/scripts/update.sh          # apply it
+sudo /opt/kubedok/current/scripts/update.sh --force  # install the current one again
 sudo /opt/kubedok/current/scripts/status.sh          # what is running
 sudo /opt/kubedok/current/scripts/doctor.sh          # diagnose a problem
 sudo /opt/kubedok/current/scripts/logs.sh server     # logs

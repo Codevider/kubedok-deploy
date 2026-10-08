@@ -32,6 +32,8 @@ REG_PORT="${KUBEDOK_TEST_REGISTRY_PORT:-5050}"
 RUNNER="kubedok-test-runner"
 # Built by TEST 6: the dev server image, reporting a release it is not.
 WRONG_RELEASE_IMAGE="kubedok-test-wrong-release:latest"
+# Built by TEST 5: the dev server image with a new digest, publishing 1.0.1 again.
+REPUBLISHED_IMAGE="kubedok-test-republished:latest"
 HTTP_PORT="${KUBEDOK_TEST_HTTP_PORT:-18080}"
 
 PASS=0
@@ -108,7 +110,10 @@ cleanup() {
   step 'Cleaning up'
   docker rm -f kubedok-nginx kubedok-server kubedok-postgres kubedok-agent >/dev/null 2>&1 || true
   docker rm -f "${RUNNER}" "${REG_NAME}" >/dev/null 2>&1 || true
-  docker image rm "${WRONG_RELEASE_IMAGE}" "localhost:${REG_PORT}/kubedok-server:1.0.4" >/dev/null 2>&1 || true
+  docker image rm "${WRONG_RELEASE_IMAGE}" "${REPUBLISHED_IMAGE}" >/dev/null 2>&1 || true
+  # The tags the releases were pushed under. The images stay, as kubedok-*:dev.
+  docker images --format '{{.Repository}}:{{.Tag}}' | grep "^localhost:${REG_PORT}/kubedok-" \
+    | while read -r tag; do docker image rm "${tag}" >/dev/null 2>&1 || true; done
   docker volume rm kubedok_postgres_data >/dev/null 2>&1 || true
   docker network rm kubedok-proxy kubedok-postgres >/dev/null 2>&1 || true
   rm -rf "${WORK}" 2>/dev/null || true
@@ -641,6 +646,69 @@ else
   fails 'updating to the installed version was not detected as a no-op'
 fi
 
+# --force installs the installed release again: the server and nginx are
+# recreated with nothing about them changed, the database is left running.
+server_started="$(started_at kubedok-server)"
+nginx_started="$(started_at kubedok-nginx)"
+postgres_started="$(started_at kubedok-postgres)"
+if out="$(inrun "${UPDATER} --force 1.0.1" 2>&1)"; then
+  pass 'update.sh --force on the installed release completes'
+else
+  fails 'update.sh --force on the installed release failed'
+  printf '%s\n' "${out}" | tail -20 | sed 's/^/      /'
+fi
+if grep -q 'Installing 1.0.1 again, with the same images' <<<"${out}"; then
+  pass 'it says the images are the same'
+else
+  fails 'it did not say the images are the same'
+fi
+if [ "$(started_at kubedok-server)" != "${server_started}" ]; then
+  pass 'the server was recreated'
+else
+  fails 'the server was not recreated'
+fi
+if [ "$(started_at kubedok-nginx)" != "${nginx_started}" ]; then
+  pass 'nginx was recreated'
+else
+  fails 'nginx was not recreated'
+fi
+assert_eq "${postgres_started}" "$(started_at kubedok-postgres)" 'PostgreSQL, whose image did not change, kept running'
+assert_eq '250m' "$(container_env kubedok-nginx KUBEDOK_CLIENT_MAX_BODY_SIZE)" 'nginx came back with the saved settings'
+assert_eq '1.0.1' "$(installed_release)" 'current still points at 1.0.1'
+assert_eq '1.0.0' "$(previous_link)" 'previous still points at 1.0.0, not at 1.0.1 itself'
+assert_fails 'the reinstall left no staging area' docker exec "${RUNNER}" test -e "${INSTALL_ROOT}/.staging"
+
+# 1.0.1 published again with a new server image, as release.sh does for a
+# version that is published already. A plain run still has nothing to do;
+# --force installs the new image and records the new manifest.
+cid="$(docker create kubedok-server:dev)"
+docker commit --change 'LABEL kubedok.test=republished' "${cid}" "${REPUBLISHED_IMAGE}" >/dev/null
+docker rm "${cid}" >/dev/null
+push_component server "${REPUBLISHED_IMAGE}" 1.0.1
+write_manifest 1.0.1 1.0.0
+if inrun "${UPDATER} 1.0.1" 2>&1 | grep -q 'Already on 1.0.1'; then
+  pass 'without --force, a republished installed version is still a no-op'
+else
+  fails 'without --force, a republished installed version was not a no-op'
+fi
+if out="$(inrun "${UPDATER} -f 1.0.1" 2>&1)"; then
+  pass 'update.sh -f installs the republished 1.0.1'
+else
+  fails 'update.sh -f on the republished 1.0.1 failed'
+  printf '%s\n' "${out}" | tail -20 | sed 's/^/      /'
+fi
+if grep -q 'new images for server$' <<<"$(tr -d '\r' <<<"${out}")"; then
+  pass 'it names the image that changed'
+else
+  fails 'it did not name the server image as the one that changed'
+fi
+assert_eq "$(digest_of server 1.0.1)" "$(docker inspect -f '{{.Config.Image}}' kubedok-server 2>/dev/null)" \
+  'the server runs the republished image'
+assert_eq "$(digest_of server 1.0.1)" \
+  "$(inrun "jq -r .images.server ${INSTALL_ROOT}/releases/1.0.1/release.json" | tr -d '\r')" \
+  'the installed manifest records it'
+assert_eq '1.0.0' "$(previous_link)" 'previous still points at 1.0.0'
+
 # The rest run the repository-root copy, with common.sh under scripts/, so
 # running update.sh from a clone stays covered.
 # A PostgreSQL major bump must never be applied by a routine update.
@@ -725,6 +793,37 @@ for _ in $(seq 1 60); do
 done
 assert_eq '1.0.1' "${reported}" '/api/version reports 1.0.1 again'
 assert_update_left_nothing 'smoke-tested 1.0.4' '1.0.0 1.0.1' '1.0.1' '1.0.0'
+
+# A forced reinstall replaces the tree `current` points at, so a failed one
+# must leave that tree and the images it pinned exactly as they were. 1.0.1 is
+# published again with the server that reports the wrong release.
+sum_before="$(tree_sum 1.0.1)"
+cp "${SERVE_DIR}/releases/1.0.1.json" "${WORK}/1.0.1.json.published"
+jq --arg ref "$(digest_of server 1.0.4)" '.images.server = $ref' \
+  "${WORK}/1.0.1.json.published" > "${SERVE_DIR}/releases/1.0.1.json"
+if out="$(inrun "${UPDATER} --force 1.0.1" 2>&1)"; then
+  fails 'a forced reinstall whose server reports the wrong release unexpectedly succeeded'
+else
+  if grep -q 'restoring 1.0.1' <<<"${out}"; then
+    pass 'a failed forced reinstall restores 1.0.1'
+  else
+    fails 'a failed forced reinstall did not restore 1.0.1'
+    printf '%s\n' "${out}" | tail -5 | sed 's/^/      /'
+  fi
+fi
+mv "${WORK}/1.0.1.json.published" "${SERVE_DIR}/releases/1.0.1.json"
+assert_eq "$(digest_of server 1.0.1)" "$(docker inspect -f '{{.Config.Image}}' kubedok-server 2>/dev/null)" \
+  "the server runs the installed 1.0.1 image again"
+reported=''
+for _ in $(seq 1 60); do
+  reported="$(inrun 'curl -fsS http://kubedok-nginx/api/version' 2>/dev/null | tr -d '\r' \
+    | jq -r '.release // empty' 2>/dev/null || true)"
+  [ "${reported}" = '1.0.1' ] && break
+  sleep 2
+done
+assert_eq '1.0.1' "${reported}" '/api/version reports 1.0.1 again'
+assert_eq "${sum_before}" "$(tree_sum 1.0.1)" 'the installed 1.0.1 tree is exactly as it was'
+assert_update_left_nothing 'forced 1.0.1' '1.0.0 1.0.1' '1.0.1' '1.0.0'
 
 # A release that is already on disk, kept for rollback, must come out of a
 # failed update to it exactly as it went in. Its manifest is swapped for one
