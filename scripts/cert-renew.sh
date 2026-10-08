@@ -129,7 +129,7 @@ reload_nginx() {
     if docker exec kubedok-nginx nginx -s reload >/dev/null 2>&1; then
       ok "nginx reloaded"
     else
-      warn "Could not reload nginx. Restart it: ${SCRIPT_DIR}/restart.sh nginx"
+      warn "Could not reload nginx. Restart it: $(command_hint restart) nginx"
     fi
   fi
 }

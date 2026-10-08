@@ -52,7 +52,7 @@ back to **Proxied** with SSL mode **Full (strict)**. Afterwards, confirm
 renewals still reach the origin through the proxy:
 
 ```bash
-sudo /opt/kubedok/current/scripts/cert-renew.sh --dry-run
+sudo kbd cert-renew --dry-run
 ```
 
 That last step matters: certificates renew from a timer every 60 days, and a
@@ -69,38 +69,40 @@ instead, are in
 
 ## Operate
 
-Everything installs under `/opt/kubedok`.
+Everything installs under `/opt/kubedok`, and `setup.sh` adds the `kbd`
+command, which runs the install's scripts by name. `kbd help` lists them.
 
 ```bash
-sudo /opt/kubedok/current/scripts/update.sh --check  # is there an update?
-sudo /opt/kubedok/current/scripts/update.sh          # apply it
-sudo /opt/kubedok/current/scripts/update.sh --force  # install the current one again
-sudo /opt/kubedok/current/scripts/status.sh          # what is running
-sudo /opt/kubedok/current/scripts/doctor.sh          # diagnose a problem
-sudo /opt/kubedok/current/scripts/logs.sh server     # logs
-sudo /opt/kubedok/current/scripts/backup.sh          # back up
-sudo /opt/kubedok/current/scripts/rollback.sh        # undo an update
-sudo /opt/kubedok/current/scripts/config.sh          # show the settings
+sudo kbd update --check  # is there an update?
+sudo kbd update          # apply it
+sudo kbd update --force  # install the current one again
+sudo kbd status          # what is running
+sudo kbd doctor          # diagnose a problem
+sudo kbd logs server     # logs
+sudo kbd backup          # back up
+sudo kbd rollback        # undo an update
+sudo kbd config          # show the settings
 ```
 
-Change a setting with `config.sh`. It checks the value, saves it in
+Change a setting with `kbd config`. It checks the value, saves it in
 `/opt/kubedok/config/kubedok.env`, and restarts only the containers that read
 it:
 
 ```bash
-sudo /opt/kubedok/current/scripts/config.sh set LOG_LEVEL=debug
-sudo /opt/kubedok/current/scripts/config.sh unset LOG_LEVEL   # back to the default
+sudo kbd config set LOG_LEVEL=debug
+sudo kbd config unset LOG_LEVEL   # back to the default
 ```
 
 The host and TLS mode change with a `setup.sh` re-run, and the release with
-`update.sh`. An agent keeps its settings in `/opt/kubedok-agent/agent.env`:
-edit it there, then run `restart.sh agent`.
+`kbd update`. An agent keeps its settings in `/opt/kubedok-agent/agent.env`:
+edit it there, then run `kbd restart agent`.
 
-Each release installs its own copy of the scripts, `update.sh` included, in
-`/opt/kubedok/releases/<version>/scripts/`, and `current` points at the release
-that is running. After an update, `previous` points at the release it
-replaced, which is where `rollback.sh` goes when it is not given a version;
-`rollback.sh --list` shows what is on disk.
+Each release installs its own copy of the scripts, `update.sh` and `kbd`
+included, in `/opt/kubedok/releases/<version>/scripts/`, and `current` points
+at the release that is running. `/usr/local/bin/kbd` links through `current`,
+so it always runs that release's scripts. After an update, `previous` points
+at the release it replaced, which is where `kbd rollback` goes when it is not
+given a version; `kbd rollback --list` shows what is on disk.
 
 ## Install an agent
 
@@ -114,7 +116,7 @@ sudo ./scripts/agent-install.sh --token <token> --api-url https://kubedok.exampl
 ```
 
 On the control-plane host the agent is already installed alongside everything
-else, so use `/opt/kubedok/current/scripts/agent-install.sh` there instead.
+else, so use `sudo kbd agent-install --token <token>` there instead.
 
 Agents update independently of the control plane, so updating Kubedok does
 not restart workloads everywhere at once.
@@ -144,6 +146,7 @@ scripts/
   agent-install.sh          Install the agent on any Docker host.
   agent-update.sh           Update one agent, independently.
   uninstall.sh              Remove containers. Keeps data unless --purge-data.
+  kbd                       The kbd command: runs the scripts above by name.
 releases/
   release.schema.json       The manifest contract.
   example.json              Documented example. Not a real release.

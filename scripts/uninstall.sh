@@ -80,6 +80,7 @@ if command -v systemctl >/dev/null 2>&1; then
 fi
 
 log "Removing release tree"
+remove_kbd_link
 rm -rf "${KUBEDOK_RELEASES_DIR}" "${KUBEDOK_CURRENT_LINK}" "${KUBEDOK_PREVIOUS_LINK}" "${KUBEDOK_STAGING_DIR}"
 ok "Release tree removed"
 

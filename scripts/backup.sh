@@ -43,7 +43,7 @@ docker inspect kubedok-postgres >/dev/null 2>&1 \
   || die "The kubedok-postgres container does not exist. Nothing to back up."
 
 [ "$(docker inspect -f '{{.State.Running}}' kubedok-postgres)" = "true" ] \
-  || die "kubedok-postgres is not running. Start it first: ${SCRIPT_DIR}/restart.sh postgres"
+  || die "kubedok-postgres is not running. Start it first: $(command_hint restart) postgres"
 
 mkdir -p "${KUBEDOK_BACKUPS_DIR}"
 chmod 700 "${KUBEDOK_BACKUPS_DIR}"

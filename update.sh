@@ -158,7 +158,7 @@ report_outdated_agents() {
   versions="$(local_curl -fsS --max-time 10 "${base}/api/health" >/dev/null 2>&1 && echo ok || echo unreachable)"
   [ "${versions}" = "ok" ] || return 0
   warn "After this update, agents older than ${min_agent} are unsupported."
-  warn "Update them with: ${KUBEDOK_CURRENT_LINK}/scripts/agent-update.sh"
+  warn "Update them with: $(command_hint agent-update)"
 }
 report_outdated_agents "$(manifest_field minimumAgentVersion "${NEW_MANIFEST_TMP}")"
 
@@ -193,7 +193,7 @@ for file in postgres.yml postgres.public.yml server.yml nginx.yml agent.yml; do
   fetch_url "${KUBEDOK_RELEASE_BASE_URL}/compose/${file}" "${STAGED_DIR}/compose/${file}"
 done
 for file in common.sh doctor.sh backup.sh restore.sh status.sh logs.sh restart.sh \
-            config.sh rollback.sh agent-install.sh agent-update.sh cert-renew.sh uninstall.sh; do
+            config.sh rollback.sh agent-install.sh agent-update.sh cert-renew.sh uninstall.sh kbd; do
   fetch_url "${KUBEDOK_RELEASE_BASE_URL}/scripts/${file}" "${STAGED_DIR}/scripts/${file}"
   chmod 755 "${STAGED_DIR}/scripts/${file}"
 done
@@ -218,7 +218,7 @@ restore_previous() {
   compose nginx up -d >/dev/null 2>&1 || true
   err "Containers restored to ${CURRENT_VERSION}."
   err "The database was NOT rolled back. If ${NEW_VERSION} applied migrations,"
-  err "restore the backup explicitly: ${KUBEDOK_CURRENT_LINK}/scripts/restore.sh ${BACKUP_PATH}"
+  err "restore the backup explicitly: $(command_hint restore) ${BACKUP_PATH}"
   exit 1
 }
 
@@ -321,6 +321,8 @@ fi
 set_current_release "${NEW_VERSION}"
 set_config KUBEDOK_RELEASE "${TARGET_REF}"
 ok "Recorded ${NEW_VERSION} as current"
+# An install set up before the kbd command existed gets it here.
+install_kbd_link
 
 # ── 12. Keep the previous release for rollback, prune older ones ─────────────
 KEEP="${KUBEDOK_KEEP_RELEASES:-3}"
@@ -340,13 +342,13 @@ if [ "${REINSTALL}" = "true" ]; then
   ok "Installed ${NEW_VERSION} again"
   printf '\n'
   if ROLLBACK_TARGET="$(previous_release)"; then
-    printf '  Rollback     %s/scripts/rollback.sh  (back to %s)\n' "${KUBEDOK_CURRENT_LINK}" "${ROLLBACK_TARGET}"
+    printf '  Rollback     %s  (back to %s)\n' "$(command_hint rollback)" "${ROLLBACK_TARGET}"
   fi
 else
   ok "Updated ${CURRENT_VERSION} → ${NEW_VERSION}"
   printf '\n'
-  printf '  Rollback     %s/scripts/rollback.sh  (back to %s)\n' "${KUBEDOK_CURRENT_LINK}" "${CURRENT_VERSION}"
+  printf '  Rollback     %s  (back to %s)\n' "$(command_hint rollback)" "${CURRENT_VERSION}"
 fi
 printf '  Backup taken %s\n' "${BACKUP_PATH}"
-printf '  Status       %s/scripts/status.sh\n' "${KUBEDOK_CURRENT_LINK}"
+printf '  Status       %s\n' "$(command_hint status)"
 printf '\n'

@@ -72,7 +72,7 @@ if [ "${BACKUP_RELEASE}" != "unknown" ] && [ "${CURRENT_VERSION}" != "unknown" ]
   warn "This backup came from ${BACKUP_RELEASE} but ${CURRENT_VERSION} is installed."
   if semver_ge "${CURRENT_VERSION}" "${BACKUP_RELEASE}"; then
     warn "Restoring an older schema under newer code. The server may fail to start."
-    warn "Consider rolling back to ${BACKUP_RELEASE} first: ${SCRIPT_DIR}/rollback.sh"
+    warn "Consider rolling back to ${BACKUP_RELEASE} first: $(command_hint rollback)"
   fi
   printf '\n'
 fi

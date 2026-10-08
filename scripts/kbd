@@ -1,0 +1,100 @@
+#!/usr/bin/env bash
+#
+# kbd: the install's scripts, by name.
+#
+#   sudo kbd status
+#   sudo kbd config set LOG_LEVEL=debug
+#   sudo kbd update --check
+#   kbd help
+#
+# setup.sh and update.sh link /usr/local/bin/kbd to current/scripts/kbd, so it
+# always runs the scripts of the current release, and an update or a rollback
+# brings its own commands. `kbd <command>` runs <command>.sh with the arguments
+# given; `kbd <command> --help` shows that script's own help.
+set -Eeuo pipefail
+
+# The file itself, past /usr/local/bin/kbd and `current`:
+# <install root>/releases/<version>/scripts/kbd.
+SCRIPTS="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+
+# The install this copy belongs to, so one outside /opt/kubedok needs no
+# KUBEDOK_ROOT in the environment.
+if [ -z "${KUBEDOK_ROOT:-}" ]; then
+  root="$(dirname "$(dirname "$(dirname "${SCRIPTS}")")")"
+  if [ -L "${root}/current" ]; then
+    export KUBEDOK_ROOT="${root}"
+  fi
+fi
+
+# shellcheck source=common.sh
+. "${SCRIPTS}/common.sh"
+
+# command|script|what it does
+COMMANDS="status|status.sh|Containers, health, the current release and the database
+logs|logs.sh|Logs for one component, or all of them interleaved
+restart|restart.sh|Restart one component, or all of them in order
+config|config.sh|Show and change the settings, restarting what reads them
+doctor|doctor.sh|Check the install and say what is wrong
+backup|backup.sh|Back up the database, secrets and settings
+restore|restore.sh|Restore a backup
+update|update.sh|Update to a newer release, or --force the installed one again
+rollback|rollback.sh|Go back to the previous release
+cert-renew|cert-renew.sh|Issue or renew the TLS certificate
+agent-install|agent-install.sh|Install the agent on this host
+agent-update|agent-update.sh|Update this host's agent
+uninstall|uninstall.sh|Remove the install; the data stays unless --purge-data"
+
+usage() {
+  local name script summary
+  printf 'Usage: kbd <command> [arguments]\n\n'
+  while IFS='|' read -r name script summary; do
+    printf '  %-15s %s\n' "${name}" "${summary}"
+  done <<<"${COMMANDS}"
+  printf '  %-15s %s\n' 'version' 'The installed release and agent'
+  printf '  %-15s %s\n' 'help' 'This list'
+  printf '\nkbd <command> --help shows what a command takes. They run as root, except\n'
+  printf 'version and help; the scripts are in %s.\n' "${KUBEDOK_CURRENT_LINK}/scripts"
+}
+
+script_for() {
+  local name script summary
+  while IFS='|' read -r name script summary; do
+    if [ "${name}" = "$1" ]; then
+      printf '%s' "${script}"
+      return 0
+    fi
+  done <<<"${COMMANDS}"
+  return 1
+}
+
+COMMAND="help"
+if [ $# -gt 0 ]; then
+  COMMAND="$1"
+  shift
+fi
+
+case "${COMMAND}" in
+  help|-h|--help)
+    usage
+    exit 0
+    ;;
+  version|--version)
+    manifest="${KUBEDOK_CURRENT_LINK}/release.json"
+    [ -f "${manifest}" ] || die "No release is installed at ${KUBEDOK_ROOT}."
+    printf 'Kubedok %s (agent %s)\n' "$(manifest_field release "${manifest}")" \
+      "$(manifest_field agentVersion "${manifest}")"
+    exit 0
+    ;;
+esac
+
+SCRIPT="$(script_for "${COMMAND}")" || {
+  usage >&2
+  printf '\n' >&2
+  die "Unknown command: ${COMMAND}"
+}
+[ -x "${SCRIPTS}/${SCRIPT}" ] || die "${SCRIPT} is missing from ${SCRIPTS}."
+
+# Read by require_root, so its hint says `sudo kbd update` rather than the
+# script's path inside the release tree.
+export KUBEDOK_INVOKED_AS="kbd ${COMMAND}"
+exec "${SCRIPTS}/${SCRIPT}" "$@"

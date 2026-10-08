@@ -80,11 +80,11 @@ changeable() {
     KUBEDOK_TLS_ENABLED)
       die "setup.sh decides KUBEDOK_TLS_ENABLED from KUBEDOK_TLS and the host. Change those with it instead." ;;
     KUBEDOK_RELEASE)
-      die "update.sh changes the release: ${KUBEDOK_CURRENT_LINK}/scripts/update.sh <version or channel>" ;;
+      die "update.sh changes the release: $(command_hint update) <version or channel>" ;;
     KUBEDOK_POSTGRES_USER|KUBEDOK_POSTGRES_DB)
       die "The database was created with ${name}, so it cannot change on an existing install." ;;
     KUBEDOK_API_URL|KUBEDOK_HOST_ADDRESS|KUBEDOK_REGISTRATION_TOKEN|KUBEDOK_SYNC_INTERVAL_SECS|KUBEDOK_AGENT_LOG)
-      die "${name} is the agent's. It keeps its settings in ${KUBEDOK_AGENT_ROOT}/agent.env: edit it there, then run ${SCRIPT_DIR}/restart.sh agent" ;;
+      die "${name} is the agent's. It keeps its settings in ${KUBEDOK_AGENT_ROOT}/agent.env: edit it there, then run: $(command_hint restart) agent" ;;
     *)
       die "${name} is not a Kubedok setting. The containers receive only the ones config.sh lists." ;;
   esac
@@ -142,8 +142,8 @@ show_settings() {
   show_row 'KUBEDOK_RELEASE' "${KUBEDOK_RELEASE:-stable}, $(current_release) installed" 'update.sh'
   show_row 'KUBEDOK_POSTGRES_USER' "$(effective_value KUBEDOK_POSTGRES_USER)" 'fixed at install'
   show_row 'KUBEDOK_POSTGRES_DB' "$(effective_value KUBEDOK_POSTGRES_DB)" 'fixed at install'
-  printf '\n  Saved in %s. Change one with: %s/config.sh set KEY=VALUE\n\n' \
-    "${KUBEDOK_CONFIG_FILE}" "${SCRIPT_DIR}"
+  printf '\n  Saved in %s. Change one with: %s set KEY=VALUE\n\n' \
+    "${KUBEDOK_CONFIG_FILE}" "$(command_hint config)"
 }
 
 # ── set / unset ──────────────────────────────────────────────────────────────
@@ -256,7 +256,7 @@ apply_changes() {
   for c in postgres server nginx; do
     [[ "${components}" == *" ${c} "* ]] || continue
     if [ "${RESTART}" != "true" ]; then
-      log "Not restarted. Apply with: ${SCRIPT_DIR}/restart.sh ${c}"
+      log "Not restarted. Apply with: $(command_hint restart) ${c}"
       continue
     fi
     if ! "${SCRIPT_DIR}/restart.sh" "${c}"; then
@@ -264,7 +264,7 @@ apply_changes() {
       err "To put them back as they were:"
       local revert
       for revert in "${REVERT[@]}"; do
-        printf '      %s/config.sh %s\n' "${SCRIPT_DIR}" "${revert}" >&2
+        printf '      %s %s\n' "$(command_hint config)" "${revert}" >&2
       done
       exit 1
     fi

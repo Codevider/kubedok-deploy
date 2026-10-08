@@ -52,7 +52,7 @@ die()   { err "$*"; exit 1; }
 
 # ── Preconditions ────────────────────────────────────────────────────────────
 require_root() {
-  [ "$(id -u)" -eq 0 ] || die "This script must run as root. Try: sudo $0 $*"
+  [ "$(id -u)" -eq 0 ] || die "This script must run as root. Try: sudo ${KUBEDOK_INVOKED_AS:-$0} $*"
 }
 
 require_cmd() {
@@ -410,6 +410,49 @@ point_link_at_release() {
 }
 
 set_current_release() { point_link_at_release "${KUBEDOK_CURRENT_LINK}" "$1"; }
+
+# The kbd command. It links through `current`, so it always runs the current
+# release's scripts and needs setting up only once; setup.sh and update.sh
+# both make sure it is there. A kbd that is not this install's is left alone.
+KUBEDOK_KBD_LINK="/usr/local/bin/kbd"
+install_kbd_link() {
+  local target="${KUBEDOK_CURRENT_LINK}/scripts/kbd"
+  [ -x "${target}" ] || return 0
+  if [ -L "${KUBEDOK_KBD_LINK}" ]; then
+    case "$(readlink "${KUBEDOK_KBD_LINK}")" in
+      "${target}") return 0 ;;
+      */current/scripts/kbd) ;;
+      *) warn "${KUBEDOK_KBD_LINK} is not Kubedok's, so the kbd command is not installed. The scripts are in ${KUBEDOK_CURRENT_LINK}/scripts."
+         return 0 ;;
+    esac
+  elif [ -e "${KUBEDOK_KBD_LINK}" ]; then
+    warn "${KUBEDOK_KBD_LINK} is not Kubedok's, so the kbd command is not installed. The scripts are in ${KUBEDOK_CURRENT_LINK}/scripts."
+    return 0
+  fi
+  mkdir -p "$(dirname "${KUBEDOK_KBD_LINK}")"
+  ln -sfn "${target}" "${KUBEDOK_KBD_LINK}"
+  ok "Installed the kbd command (${KUBEDOK_KBD_LINK})"
+}
+
+kbd_installed() {
+  [ "$(readlink "${KUBEDOK_KBD_LINK}" 2>/dev/null)" = "${KUBEDOK_CURRENT_LINK}/scripts/kbd" ]
+}
+
+remove_kbd_link() {
+  if kbd_installed; then
+    rm -f "${KUBEDOK_KBD_LINK}"
+  fi
+}
+
+# How to tell the operator to run one of the scripts: `kbd <name>`, or the
+# script's path where the kbd command is not installed.
+command_hint() {
+  if kbd_installed; then
+    printf 'kbd %s' "$1"
+  else
+    printf '%s/scripts/%s.sh' "${KUBEDOK_CURRENT_LINK}" "$1"
+  fi
+}
 
 # The release that was current before the last successful update: where
 # rollback.sh goes when it is not given a version. update.sh records it as it

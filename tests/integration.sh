@@ -141,10 +141,10 @@ cleanup >/dev/null 2>&1 || true
 mkdir -p "${INSTALL_ROOT}" "${SERVE_DIR}/releases" "${SERVE_DIR}/channels" \
          "${SERVE_DIR}/compose" "${SERVE_DIR}/scripts"
 cp "${DEPLOY_DIR}"/compose/*.yml "${SERVE_DIR}/compose/"
-cp "${DEPLOY_DIR}"/scripts/*.sh  "${SERVE_DIR}/scripts/"
+cp "${DEPLOY_DIR}"/scripts/*.sh "${DEPLOY_DIR}/scripts/kbd" "${SERVE_DIR}/scripts/"
 cp "${DEPLOY_DIR}"/setup.sh "${DEPLOY_DIR}"/update.sh "${SERVE_DIR}/"
 cp "${DEPLOY_DIR}/releases/release.schema.json" "${SERVE_DIR}/releases/"
-chmod +x "${SERVE_DIR}"/*.sh "${SERVE_DIR}"/scripts/*.sh
+chmod +x "${SERVE_DIR}"/*.sh "${SERVE_DIR}"/scripts/*.sh "${SERVE_DIR}/scripts/kbd"
 # A bare mirror of this repository, so TEST 0 can exercise a real `git clone`
 # rather than a file copy.
 REPO_MIRROR="${WORK}/repo-mirror.git"
@@ -340,12 +340,42 @@ assert_fails 'a fresh install records no previous release' \
   docker exec "${RUNNER}" test -L "${INSTALL_ROOT}/previous"
 
 # The summary once named ${KUBEDOK_ROOT}/update.sh, which nothing installed.
-# Hold it to a path that exists.
+# Hold it to a command that exists.
 UPDATER="${INSTALL_ROOT}/current/scripts/update.sh"
-assert_eq "${UPDATER}" "$(sed -n 's/^  Update  *//p' "${WORK}/setup.log" | tr -d '\r' | head -1)" \
-  'the setup summary names current/scripts/update.sh as the updater'
+assert_eq 'sudo kbd update' "$(sed -n 's/^  Update  *//p' "${WORK}/setup.log" | tr -d '\r' | head -1)" \
+  'the setup summary names kbd update as the updater'
 assert_eq '755' "$(inrun "stat -c %a ${UPDATER}" 2>/dev/null | tr -d '\r')" \
   'the installed update.sh is mode 755'
+
+# kbd runs the scripts by name, through `current`.
+assert_eq "${INSTALL_ROOT}/current/scripts/kbd" "$(inrun 'readlink /usr/local/bin/kbd' | tr -d '\r')" \
+  '/usr/local/bin/kbd links to current/scripts/kbd'
+assert_eq 'Kubedok 1.0.0 (agent 1.0.0)' "$(inrun 'kbd version' | tr -d '\r')" 'kbd version names the release'
+# Without KUBEDOK_ROOT, kbd finds the install it belongs to from its own path.
+assert_eq 'Kubedok 1.0.0 (agent 1.0.0)' "$(inrun 'env -u KUBEDOK_ROOT kbd version' | tr -d '\r')" \
+  'kbd finds its install without KUBEDOK_ROOT'
+# Captured first: grep -q stops reading at a match, and under pipefail the
+# writer's broken pipe would fail the check.
+out="$(inrun 'kbd help' 2>&1 || true)"
+if grep -qE '^  config +Show and change the settings' <<<"${out}"; then
+  pass 'kbd help lists the commands'
+else
+  fails 'kbd help does not list config'
+fi
+assert_eq "${HTTP_PORT}" "$(inrun 'kbd config get http_port' | tr -d '\r')" 'kbd passes the arguments on'
+out="$(inrun 'kbd frobnicate' 2>&1 || true)"
+if grep -q 'Unknown command: frobnicate' <<<"${out}"; then
+  pass 'kbd refuses an unknown command'
+else
+  fails 'kbd did not refuse an unknown command'
+fi
+out="$(inrun 'runuser -u nobody -- kbd backup' 2>&1 || true)"
+if grep -q 'Try: sudo kbd backup' <<<"${out}"; then
+  pass 'kbd run without root says to use sudo kbd'
+else
+  fails 'kbd run without root did not point at sudo kbd'
+  printf '%s\n' "${out}" | tail -3 | sed 's/^/      /'
+fi
 
 for s in postgres-password jwt-secret registry-encryption-key; do
   mode="$(inrun "stat -c %a ${INSTALL_ROOT}/secrets/${s}" 2>/dev/null | tr -d '\r')"
@@ -619,6 +649,8 @@ assert_ok '1.0.0 is retained on disk for rollback' \
   docker exec "${RUNNER}" test -f "${INSTALL_ROOT}/releases/1.0.0/release.json"
 assert_eq '1.0.0' "$(previous_link)" 'previous points at 1.0.0, the release the update replaced'
 assert_fails 'the update left no staging area' docker exec "${RUNNER}" test -e "${INSTALL_ROOT}/.staging"
+
+assert_eq 'Kubedok 1.0.1 (agent 1.0.0)' "$(inrun 'kbd version' | tr -d '\r')" 'kbd follows current to 1.0.1'
 
 # The staged release must carry an updater too, or the next update has none.
 assert_eq '755' "$(inrun "stat -c %a ${INSTALL_ROOT}/releases/1.0.1/scripts/update.sh" 2>/dev/null | tr -d '\r')" \
@@ -962,6 +994,7 @@ else
   tail -20 "${WORK}/uninstall.log" | sed 's/^/      /'
 fi
 assert_fails 'containers are gone' docker inspect kubedok-server
+assert_fails 'the kbd command is gone' docker exec "${RUNNER}" test -L /usr/local/bin/kbd
 assert_ok 'the PostgreSQL volume survives' docker volume inspect kubedok_postgres_data
 assert_ok 'secrets survive' docker exec "${RUNNER}" test -f "${INSTALL_ROOT}/secrets/registry-encryption-key"
 assert_ok 'backups survive' docker exec "${RUNNER}" test -d "${INSTALL_ROOT}/backups"

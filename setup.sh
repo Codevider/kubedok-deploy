@@ -355,7 +355,7 @@ install_release() {
     # pinned, even when that version has been published again since. Moving
     # to another release takes a backup first, which is update.sh's job.
     if setting_given KUBEDOK_RELEASE && [ "${KUBEDOK_RELEASE}" != "${installed}" ]; then
-      die "Kubedok ${installed} is installed here, and setup.sh does not change releases. Run: ${KUBEDOK_CURRENT_LINK}/scripts/update.sh ${KUBEDOK_RELEASE}"
+      die "Kubedok ${installed} is installed here, and setup.sh does not change releases. Run: $(command_hint update) ${KUBEDOK_RELEASE}"
     fi
     RELEASE_VERSION="${installed}"
     RELEASE_DIR="${KUBEDOK_RELEASES_DIR}/${RELEASE_VERSION}"
@@ -390,7 +390,7 @@ install_release() {
 
   for file in common.sh doctor.sh backup.sh restore.sh status.sh logs.sh \
               restart.sh config.sh rollback.sh agent-install.sh agent-update.sh \
-              cert-renew.sh uninstall.sh; do
+              cert-renew.sh uninstall.sh kbd; do
     if [ -f "${SCRIPT_DIR}/scripts/${file}" ]; then
       install -m 755 "${SCRIPT_DIR}/scripts/${file}" "${RELEASE_DIR}/scripts/${file}"
     else
@@ -506,7 +506,7 @@ issue_certificate() {
 
   log "Obtaining a TLS certificate for ${KUBEDOK_HOST}"
   "${KUBEDOK_CURRENT_LINK}/scripts/cert-renew.sh" --issue \
-    || die "Certificate issuance failed. Kubedok is still serving HTTP on port ${KUBEDOK_HTTP_PORT:-80}. Fix the cause and run: ${KUBEDOK_CURRENT_LINK}/scripts/cert-renew.sh --issue"
+    || die "Certificate issuance failed. Kubedok is still serving HTTP on port ${KUBEDOK_HTTP_PORT:-80}. Fix the cause and run: $(command_hint cert-renew) --issue"
 
   log "Restarting nginx with TLS"
   compose nginx up -d --force-recreate
@@ -533,7 +533,7 @@ install_agent() {
   [ "${KUBEDOK_ENABLE_AGENT}" = "true" ] || return 0
   log "Installing the local agent"
   warn "The agent needs a registration token from the Kubedok UI."
-  warn "Run: ${KUBEDOK_CURRENT_LINK}/scripts/agent-install.sh --token <token>"
+  warn "Run: $(command_hint agent-install) --token <token>"
 }
 
 # ── 15. Summary ──────────────────────────────────────────────────────────────
@@ -552,7 +552,12 @@ print_summary() {
     url="${scheme}://${hostname}:${port}"
   fi
 
-  local s="${KUBEDOK_CURRENT_LINK}/scripts"
+  # `sudo kbd status` and the like, or the scripts' paths without the command.
+  local run="sudo kbd " sh=""
+  if ! kbd_installed; then
+    run="${KUBEDOK_CURRENT_LINK}/scripts/"
+    sh=".sh"
+  fi
 
   printf '\n'
   printf '%s────────────────────────────────────────────────────────%s\n' "${_c_green}" "${_c_reset}"
@@ -564,13 +569,16 @@ print_summary() {
   printf '  Configuration    %s\n' "${KUBEDOK_CONFIG_FILE}"
   printf '  Secrets          %s\n' "${KUBEDOK_SECRETS_DIR}"
   printf '\n'
-  printf '  Status           %s/status.sh\n' "${s}"
-  printf '  Logs             %s/logs.sh [postgres|server|nginx|agent]\n' "${s}"
-  printf '  Restart          %s/restart.sh [component|all]\n' "${s}"
-  printf '  Settings         %s/config.sh\n' "${s}"
-  printf '  Health check     %s/doctor.sh\n' "${s}"
-  printf '  Backup           %s/backup.sh\n' "${s}"
-  printf '  Update           %s/update.sh\n' "${s}"
+  printf '  Status           %sstatus%s\n' "${run}" "${sh}"
+  printf '  Logs             %slogs%s [postgres|server|nginx|agent]\n' "${run}" "${sh}"
+  printf '  Restart          %srestart%s [component|all]\n' "${run}" "${sh}"
+  printf '  Settings         %sconfig%s\n' "${run}" "${sh}"
+  printf '  Health check     %sdoctor%s\n' "${run}" "${sh}"
+  printf '  Backup           %sbackup%s\n' "${run}" "${sh}"
+  printf '  Update           %supdate%s\n' "${run}" "${sh}"
+  if kbd_installed; then
+    printf '  Every command    kbd help\n'
+  fi
   printf '\n'
 
   if [ "${KUBEDOK_TLS_ENABLED}" != "true" ]; then
@@ -596,6 +604,7 @@ main() {
   resolve_tls
   create_layout
   install_release
+  install_kbd_link
   generate_secrets
   write_configuration
   create_networks

@@ -56,7 +56,7 @@ CURRENT_VERSION="$(current_release || true)"
 
 if [ -z "${TARGET}" ]; then
   TARGET="$(previous_release || true)"
-  [ -n "${TARGET}" ] || die "No previous release is recorded. update.sh records the release it replaces, and a rollback clears that record. To go to a release on disk, name it: ${SCRIPT_DIR}/rollback.sh <version> (--list shows them)."
+  [ -n "${TARGET}" ] || die "No previous release is recorded. update.sh records the release it replaces, and a rollback clears that record. To go to a release on disk, name it: $(command_hint rollback) <version> (--list shows them)."
 fi
 [ "${TARGET}" != "${CURRENT_VERSION}" ] || die "${TARGET} is already the current release."
 
@@ -96,7 +96,7 @@ compose server up -d
 if ! wait_for_container_health kubedok-server 300; then
   err "The server did not come up on ${TARGET}."
   err "The schema may be incompatible. Restore a backup taken on ${TARGET}:"
-  err "  ${SCRIPT_DIR}/restore.sh --list"
+  err "  $(command_hint restore) --list"
   exit 1
 fi
 
