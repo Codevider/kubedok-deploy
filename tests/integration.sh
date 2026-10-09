@@ -1050,6 +1050,48 @@ health="$(inrun 'curl -fsS http://kubedok-nginx/api/health' 2>/dev/null | tr -d 
 assert_eq 'connected' "$(jq -r .database <<<"${health}" 2>/dev/null)" 'the API is healthy after the restore'
 
 # ═══════════════════════════════════════════════════════════════════════════
+step 'TEST 8b — restoring a backup taken on another install'
+
+# Another install's backup: data like this one's, secrets of its own. The
+# database here keeps the password its data volume was created with, since a
+# dump carries no roles. restore.sh used to copy the archive's postgres-password
+# over it, so the server logged in with a password the database refuses and
+# the restore left the install down.
+foreign_source="$(inrun "${INSTALL_ROOT}/current/scripts/backup.sh --label foreign-source --quiet" | tr -d '\r')"
+FOREIGN="${WORK}/foreign"
+inrun "set -e; rm -rf ${FOREIGN}; mkdir -p ${FOREIGN}/stage
+  tar -xzf '${foreign_source}' -C ${FOREIGN}/stage
+  for secret in postgres-password jwt-secret registry-encryption-key; do
+    openssl rand -hex 32 > ${FOREIGN}/stage/secrets/\${secret}
+  done
+  tar -czf ${FOREIGN}/kubedok-foreign.tar.gz -C ${FOREIGN}/stage ." \
+  || abort 'could not build a backup from another install'
+
+own_password="$(inrun "cat ${INSTALL_ROOT}/secrets/postgres-password" | tr -d '\r\n')"
+their_key="$(inrun "cat ${FOREIGN}/stage/secrets/registry-encryption-key" | tr -d '\r\n')"
+their_jwt="$(inrun "cat ${FOREIGN}/stage/secrets/jwt-secret" | tr -d '\r\n')"
+if inrun "${INSTALL_ROOT}/current/scripts/restore.sh ${FOREIGN}/kubedok-foreign.tar.gz --yes" \
+    > "${WORK}/restore-foreign.log" 2>&1; then
+  pass 'a backup from another install restores'
+else
+  fails 'restoring a backup from another install failed'
+  tail -15 "${WORK}/restore-foreign.log" | sed 's/^/      /'
+fi
+assert_eq "${own_password}" "$(inrun "cat ${INSTALL_ROOT}/secrets/postgres-password" | tr -d '\r\n')" \
+  'the install keeps the postgres password its database was created with'
+assert_eq "${their_key}" "$(inrun "cat ${INSTALL_ROOT}/secrets/registry-encryption-key" | tr -d '\r\n')" \
+  "the archive's registry-encryption-key is restored, so its data decrypts"
+assert_eq "${their_jwt}" "$(inrun "cat ${INSTALL_ROOT}/secrets/jwt-secret" | tr -d '\r\n')" \
+  "the archive's jwt-secret is restored"
+for secret in postgres-password jwt-secret registry-encryption-key; do
+  assert_eq '600' "$(inrun "stat -c %a ${INSTALL_ROOT}/secrets/${secret}" 2>/dev/null | tr -d '\r')" \
+    "secret ${secret} is still mode 600"
+done
+# A server that never came back fails the check rather than the suite.
+health="$(inrun 'curl -fsS http://kubedok-nginx/api/health' 2>/dev/null | tr -d '\r' || true)"
+assert_eq 'connected' "$(jq -r .database <<<"${health}" 2>/dev/null)" 'the server is back and reaches its database'
+
+# ═══════════════════════════════════════════════════════════════════════════
 step 'TEST 9 — status.sh and doctor.sh'
 
 assert_ok 'status.sh runs' docker exec "${RUNNER}" "${INSTALL_ROOT}/current/scripts/status.sh"

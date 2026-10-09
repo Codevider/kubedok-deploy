@@ -9,6 +9,11 @@
 # This replaces the current database contents. It stops the server first so
 # nothing writes during the restore, and it takes a safety backup of what is
 # there now before overwriting it.
+#
+# The archive's secrets replace this install's, so the data's encrypted
+# fields stay readable, except postgres-password: the database here was
+# created with this install's, and a dump carries no roles to change it.
+# --keep-current-secrets keeps them all.
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -30,7 +35,7 @@ while [ $# -gt 0 ]; do
       exit 0 ;;
     --yes|-y) ASSUME_YES=true; shift ;;
     --keep-current-secrets) RESTORE_SECRETS=false; shift ;;
-    -h|--help) sed -n '2,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     -*) die "Unknown option: $1" ;;
     *) ARCHIVE="$1"; shift ;;
   esac
@@ -123,11 +128,30 @@ ok "Database restored"
 if [ "${RESTORE_SECRETS}" = "true" ] && [ -d "${STAGE}/secrets" ]; then
   # The encryption key must match the data: rows encrypted under the backup's
   # registry-encryption-key cannot be read with the current one.
+  #
+  # postgres-password stays this install's. PostgreSQL takes the password only
+  # when it creates its data directory, and a dump carries no roles, so the
+  # database here still has this install's. Copying another install's over
+  # it left the server logging in with a password the database refuses.
   log "Restoring secrets from the archive"
   ensure_secrets_dir
-  cp -a "${STAGE}/secrets/." "${KUBEDOK_SECRETS_DIR}/"
-  chmod 600 "${KUBEDOK_SECRETS_DIR}"/*
-  ok "Secrets restored (registry credentials stay decryptable)"
+  restored=()
+  for secret in "${STAGE}/secrets/"*; do
+    name="$(basename "${secret}")"
+    # Plain files only: an archive made elsewhere could hold a link.
+    if [ "${name}" = "postgres-password" ] || [ ! -f "${secret}" ] || [ -L "${secret}" ]; then
+      continue
+    fi
+    # Written over in place, owned by root, whatever the archive recorded.
+    cp -- "${secret}" "${KUBEDOK_SECRETS_DIR}/${name}"
+    chmod 600 "${KUBEDOK_SECRETS_DIR}/${name}"
+    restored+=("${name}")
+  done
+  ok "Secrets restored: ${restored[*]:-none} (registry credentials stay decryptable)"
+  if [ -f "${STAGE}/secrets/postgres-password" ] \
+     && [ "$(cat "${STAGE}/secrets/postgres-password")" != "$(cat "${KUBEDOK_SECRETS_DIR}/postgres-password" 2>/dev/null)" ]; then
+    ok "Kept this install's postgres-password: the archive's is for another database"
+  fi
 else
   warn "Keeping the current secrets. If registry-encryption-key differs from the"
   warn "one in the archive, stored registry credentials will not decrypt."
