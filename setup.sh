@@ -25,6 +25,8 @@
 #   KUBEDOK_RELEASE              Channel name or exact version. (default: stable)
 #   KUBEDOK_PUBLIC_POSTGRES      Publish 5432 for debugging. (default: false)
 #   KUBEDOK_ROOT                 Install directory. (default: /opt/kubedok)
+#   KUBEDOK_RESTORE_FROM         A backup archive (kbd backup's) to start a NEW
+#                                install from, instead of an empty database.
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -73,6 +75,7 @@ KUBEDOK_RELEASE="${KUBEDOK_RELEASE:-stable}"
 KUBEDOK_ENABLE_AGENT="${KUBEDOK_ENABLE_AGENT:-false}"
 KUBEDOK_PUBLIC_POSTGRES="${KUBEDOK_PUBLIC_POSTGRES:-false}"
 KUBEDOK_SKIP_DEPS="${KUBEDOK_SKIP_DEPS:-false}"
+KUBEDOK_RESTORE_FROM="${KUBEDOK_RESTORE_FROM:-}"
 
 # ── 2. Supported platform ────────────────────────────────────────────────────
 check_platform() {
@@ -327,6 +330,92 @@ explain_dns_failure() {
   fi
 }
 
+# ── Starting from a backup ───────────────────────────────────────────────────
+# KUBEDOK_RESTORE_FROM starts a new install from a backup archive instead of an
+# empty database. The database is loaded after PostgreSQL starts and before the
+# server does, so the server never runs against an empty or half-loaded
+# schema, and the backup's registry-encryption-key is in place before then.
+# Only for a new install: an existing one is restored with `kbd restore`, which
+# takes a safety backup first.
+RESTORE_STAGE=""
+
+check_restore_archive() {
+  [ -n "${KUBEDOK_RESTORE_FROM}" ] || return 0
+  log "Checking the backup to start from"
+
+  [ -f "${KUBEDOK_RESTORE_FROM}" ] || die "KUBEDOK_RESTORE_FROM: no such file: ${KUBEDOK_RESTORE_FROM}"
+  if current_release >/dev/null 2>&1; then
+    die "Kubedok is already installed at ${KUBEDOK_ROOT}, and KUBEDOK_RESTORE_FROM only starts a new install. Restore into this one with: $(command_hint restore) ${KUBEDOK_RESTORE_FROM}"
+  fi
+  if docker volume inspect kubedok_postgres_data >/dev/null 2>&1; then
+    die "The database volume kubedok_postgres_data already exists, so this is not a new install. Restore into it with kbd restore, or remove the volume first if its data is not needed."
+  fi
+
+  RESTORE_STAGE="$(mktemp -d)"
+  trap 'rm -rf "${RESTORE_STAGE}"' EXIT
+  tar -xzf "${KUBEDOK_RESTORE_FROM}" -C "${RESTORE_STAGE}" \
+    || die "Could not read ${KUBEDOK_RESTORE_FROM} as a .tar.gz archive."
+  [ -f "${RESTORE_STAGE}/database.sql" ] \
+    || die "${KUBEDOK_RESTORE_FROM} has no database.sql. Is it a Kubedok backup?"
+  # Without the key the data was encrypted with, every stored registry
+  # credential and certificate is unreadable, so a backup without it is refused
+  # rather than started with a new key.
+  [ -s "${RESTORE_STAGE}/secrets/registry-encryption-key" ] \
+    || die "${KUBEDOK_RESTORE_FROM} has no secrets/registry-encryption-key, so its stored registry credentials and certificates could not be read."
+
+  ok "Backup from release $(jq -r '.release // "unknown"' "${RESTORE_STAGE}/backup.json" 2>/dev/null || echo unknown), taken $(jq -r '.createdAt // "unknown"' "${RESTORE_STAGE}/backup.json" 2>/dev/null || echo unknown)"
+}
+
+# The backup's data has to be one this release can bring forward: from the
+# release's upgrade floor up to the release itself. Checked before anything
+# is written, so a refusal leaves no install behind.
+check_restore_release() {
+  [ -n "${KUBEDOK_RESTORE_FROM}" ] || return 0
+  local manifest="$1" target from min
+  target="$(manifest_field release "${manifest}")"
+  from="$(jq -r '.release // empty' "${RESTORE_STAGE}/backup.json" 2>/dev/null || true)"
+  if ! is_semver "${from}"; then
+    warn "The backup does not say which release made it. Loading it into ${target} anyway."
+    return 0
+  fi
+  semver_ge "${target}" "${from}" \
+    || die "The backup comes from ${from}, which is newer than ${target}. Install ${from} or later: KUBEDOK_RELEASE=${from}"
+  min="$(manifest_field minimumUpgradeFrom "${manifest}")"
+  semver_ge "${from}" "${min}" \
+    || die "The backup comes from ${from}, and ${target} only takes data from ${min} on."
+}
+
+seed_restored_secrets() {
+  [ -n "${KUBEDOK_RESTORE_FROM}" ] || return 0
+  log "Taking the secrets from the backup"
+  ensure_secrets_dir
+  # postgres-password stays this install's: the database is created with it,
+  # and a dump carries no roles.
+  local name src taken=()
+  for name in registry-encryption-key jwt-secret; do
+    src="${RESTORE_STAGE}/secrets/${name}"
+    if [ -f "${src}" ] && [ ! -L "${src}" ] && [ -s "${src}" ]; then
+      ( umask 077; cp -- "${src}" "${KUBEDOK_SECRETS_DIR}/${name}" )
+      chmod 600 "${KUBEDOK_SECRETS_DIR}/${name}"
+      taken+=("${name}")
+    fi
+  done
+  ok "From the backup: ${taken[*]}"
+}
+
+load_restored_database() {
+  [ -n "${KUBEDOK_RESTORE_FROM}" ] || return 0
+  log "Loading the database from the backup"
+  if ! docker exec -i kubedok-postgres psql -X -q -v ON_ERROR_STOP=1 \
+       -U "${KUBEDOK_POSTGRES_USER:-kubedok}" -d "${KUBEDOK_POSTGRES_DB:-kubedok}" \
+       < "${RESTORE_STAGE}/database.sql" > "${RESTORE_STAGE}/load.log" 2>&1; then
+    err "Loading the database failed:"
+    tail -30 "${RESTORE_STAGE}/load.log" | sed 's/^/      /' >&2
+    die "The server was not started. Remove the partly loaded database before trying again: docker rm -f kubedok-postgres && docker volume rm kubedok_postgres_data"
+  fi
+  ok "Database loaded ($(du -h "${RESTORE_STAGE}/database.sql" | cut -f1))"
+}
+
 # ── 5. Install directory ─────────────────────────────────────────────────────
 create_layout() {
   log "Creating ${KUBEDOK_ROOT}"
@@ -368,6 +457,7 @@ install_release() {
     resolve_manifest "${KUBEDOK_RELEASE}" "${tmp_manifest}" >/dev/null
 
     RELEASE_VERSION="$(manifest_field release "${tmp_manifest}")"
+    check_restore_release "${tmp_manifest}"
     ok "Release ${RELEASE_VERSION}"
 
     RELEASE_DIR="${KUBEDOK_RELEASES_DIR}/${RELEASE_VERSION}"
@@ -568,6 +658,9 @@ print_summary() {
   printf '  Install          %s\n' "${KUBEDOK_ROOT}"
   printf '  Configuration    %s\n' "${KUBEDOK_CONFIG_FILE}"
   printf '  Secrets          %s\n' "${KUBEDOK_SECRETS_DIR}"
+  if [ -n "${KUBEDOK_RESTORE_FROM}" ]; then
+    printf '  Started from     %s\n' "${KUBEDOK_RESTORE_FROM}"
+  fi
   printf '\n'
   printf '  Status           %sstatus%s\n' "${run}" "${sh}"
   printf '  Logs             %slogs%s [postgres|server|nginx|agent]\n' "${run}" "${sh}"
@@ -601,10 +694,12 @@ main() {
   mkdir -p "${KUBEDOK_ROOT}"
   acquire_lock 300
 
+  check_restore_archive
   resolve_tls
   create_layout
   install_release
   install_kbd_link
+  seed_restored_secrets
   generate_secrets
   write_configuration
   create_networks
@@ -615,6 +710,7 @@ main() {
 
   pull_images
   start_postgres
+  load_restored_database
   start_server
   start_nginx
   issue_certificate

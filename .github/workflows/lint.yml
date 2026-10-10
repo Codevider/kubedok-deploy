@@ -24,7 +24,7 @@ jobs:
           # then reports every helper as undefined.
           docker run --rm -v "${PWD}:/mnt" koalaman/shellcheck:stable \
             -x --source-path=SCRIPTDIR -S warning -f gcc \
-            setup.sh update.sh tests/*.sh scripts/*.sh
+            setup.sh update.sh migrate-from-monolith.sh tests/*.sh scripts/*.sh
 
   compose:
     name: Compose files

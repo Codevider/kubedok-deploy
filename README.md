@@ -41,6 +41,14 @@ later:
 sudo KUBEDOK_HOST=new.example.com ./setup.sh
 ```
 
+To start a new install from a backup, on another server for example, give
+`setup.sh` the archive `kbd backup` made. The database is loaded before the
+server first starts, with the backup's encryption key:
+
+```bash
+sudo KUBEDOK_RESTORE_FROM=/path/to/kubedok-20260115T103000Z.tar.gz ./setup.sh
+```
+
 ### Behind Cloudflare or another CDN
 
 A proxied DNS record resolves to the CDN, not to your server, so `setup.sh`
@@ -121,6 +129,82 @@ else, so use `sudo kbd agent-install --token <token>` there instead.
 
 Agents update independently of the control plane, so updating Kubedok does
 not restart workloads everywhere at once.
+
+## Move from the single-container image
+
+Installs of the old single-container image (`approxx/kubedok-server` 0.0.x,
+with PostgreSQL, the API and nginx in one container) move to the current
+release with `migrate-from-monolith.sh`, run on the same server from a clone:
+
+```bash
+git clone https://github.com/glikaj/kubedok-deploy.git kubedok
+cd kubedok
+sudo ./migrate-from-monolith.sh --check     # report, change nothing
+sudo ./migrate-from-monolith.sh --dry-run   # rehearse on a copy of the data
+sudo ./migrate-from-monolith.sh             # migrate
+```
+
+A dump and restore alone would not do: from 1.4.9 on, releases ship their
+database migrations squashed into one, under the name of the first migration
+the old image applied, so a restored old database looks current and never gets
+the schema changes made since. The script brings the data forward on a
+scratch copy with the 1.4.8 server image, which still ships them one by one,
+and converts what those releases changed the meaning of: a load balancer's
+certificate, and nightly host clean-up, which stays off on the migrated hosts.
+It checks the result against a fresh database of the target release, then
+installs it with `setup.sh`, which loads it before the server first starts.
+
+The encryption key the stored registry passwords and certificates need comes
+over from the running API. The JWT secret is made new (`--keep-jwt-secret`
+keeps it); sign-ins stay valid either way. When the old install still uses the
+image's built-in key, `--check` says so, and `--rotate-encryption-key`
+re-encrypts the stored values under a new one. The new install listens where
+the old container was published, over plain HTTP as before, unless
+`KUBEDOK_HOST`, `KUBEDOK_TLS` or `KUBEDOK_HTTP_PORT` say otherwise. Its nginx
+also publishes an HTTPS port, 443 unless `KUBEDOK_HTTPS_PORT` says otherwise,
+even without TLS; `--check` says when something on the host, such as a proxy
+in front of the old install, already holds it.
+
+Kubedok is down for the few minutes it runs; containers on the managed hosts
+keep running. The old container is stopped, its restart policy set to `no`,
+and its volume left alone. If anything fails after the stop, it is started
+again. Deploys, rollouts or agent commands in flight hold it back, unless
+`--force` records them as cancelled. What 0.0.x left only looking unfinished
+holds nothing back, and is closed in the move: a command whose result it
+recorded and then wrote over (a race fixed since), one never answered long
+after its timeout, and a deployment or operation untouched for an hour.
+
+The old agents reconnect to the new install by themselves, and their
+containers keep running, but they cannot deploy. On each managed host, move
+the agent to the release's, as the same host:
+
+```bash
+git clone https://github.com/glikaj/kubedok-deploy.git kubedok
+cd kubedok
+sudo ./scripts/agent-install.sh --adopt
+```
+
+`--adopt` copies the agent's state, the identity it registered with, into the
+layout `agent-install.sh` makes, so the host keeps its placements and history,
+and `kbd agent-update` updates it from then on. Never register a host again
+with a new token instead: that makes a second host, and deleting the first
+deletes the stacks that ran only there. The new agent gets its overlay and
+DNS records from the server as soon as it connects, with no deploy.
+
+Then redeploy each service once, in the order the migration prints. Containers
+the old agent started find each other by Docker network aliases, which
+containers made since do not have: they find each other through the agent's
+DNS forwarder. A container still running as 0.0.x started it can lose a
+service redeployed before it. An Alpine-based one does: under the `ndots:0`
+Docker sets, musl never tries the search domain for a bare name. So the
+services that connect to others go
+first, then the ones they connect to, for example `api, worker, then mongo`.
+`--check` works the order out from each service's `dependsOn` and the sibling
+names in its environment (`mongodb://mongo:27017`). It also warns about a
+database image that keeps its data in no volume of its own, since its next
+deploy starts it empty, and one on `latest` or no tag, since its next deploy
+may pull a newer major version than the one that wrote its data. `--adopt`
+warns when a container on the host keeps data in an anonymous volume.
 
 ## Layout
 
@@ -267,6 +351,29 @@ Two synthetic releases are pushed to a throwaway local registry so the
 manifests carry genuine digests, exactly like production, and they are served
 over `file://` so the test needs no network. It requires the four `:dev`
 images, which are built from the application repository.
+
+```bash
+./tests/monolith-migration.sh
+```
+
+Moves a real 0.0.11 single-container install to the stable release. The old
+install holds data made through its own API, and a real 0.0.11 agent, in a
+Docker-in-Docker host, runs its services: MongoDB on a named volume, two
+services that reach it by name, one on glibc and one on musl, and a web
+service on a host port. It checks that `--check` and `--dry-run` change
+nothing, and that a migration failing after the stop puts the old install
+back. Then it migrates, checks that the old agent takes the overlay the new
+server sends it, adopts the agent, checks that the new one serves DNS with no
+deploy, and redeploys every service in the order `--check` gives, with
+MongoDB keeping its data and both of its users reaching it throughout. Last it
+deploys an HTTPS load balancer whose certificate came over from the old
+install. Unlike the suite above it pulls the real images, so it needs network
+access; it takes about 20 minutes.
+
+To try a release before it is published, set `KUBEDOK_TEST_MANIFEST` to its
+manifest. If its images are on a local registry, published on
+`localhost:PORT`, name that registry's container in `KUBEDOK_TEST_REGISTRY`:
+the agent host reaches it at the same address.
 
 ```bash
 ./tests/cert-probe.sh
