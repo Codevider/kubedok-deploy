@@ -25,7 +25,7 @@ KUBEDOK_LOCK_FILE="${KUBEDOK_ROOT}/.lock"
 # The agent is a separate install with its own settings (agent-install.sh).
 KUBEDOK_AGENT_ROOT="${KUBEDOK_AGENT_ROOT:-/opt/kubedok-agent}"
 
-KUBEDOK_RELEASE_BASE_URL="${KUBEDOK_RELEASE_BASE_URL:-https://raw.githubusercontent.com/glikaj/kubedok-deploy/main}"
+KUBEDOK_RELEASE_BASE_URL="${KUBEDOK_RELEASE_BASE_URL:-https://raw.githubusercontent.com/Codevider/kubedok-deploy/main}"
 
 # Manifest formats this tooling understands. A manifest declaring anything else
 # means the install is older than the release it is being pointed at.

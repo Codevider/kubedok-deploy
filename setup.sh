@@ -9,7 +9,7 @@
 # saved, which is how the host and TLS mode change after install; config.sh
 # changes the rest.
 #
-#   git clone https://github.com/glikaj/kubedok-deploy.git kubedok
+#   git clone https://github.com/Codevider/kubedok-deploy.git kubedok
 #   cd kubedok
 #   sudo KUBEDOK_HOST=kubedok.example.com KUBEDOK_TLS=auto ./setup.sh
 #
@@ -49,7 +49,7 @@ directories that live beside it in the repository.
 
 Clone the repository and run it from there:
 
-  git clone https://github.com/glikaj/kubedok-deploy.git kubedok
+  git clone https://github.com/Codevider/kubedok-deploy.git kubedok
   cd kubedok
   sudo ./setup.sh
 

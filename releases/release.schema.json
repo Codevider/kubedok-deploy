@@ -1,6 +1,6 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://github.com/glikaj/kubedok-deploy/releases/release.schema.json",
+  "$id": "https://github.com/Codevider/kubedok-deploy/releases/release.schema.json",
   "title": "Kubedok release manifest",
   "description": "Immutable description of one Kubedok suite release. Published by CI only after every image in `images` has been pushed successfully.",
   "type": "object",

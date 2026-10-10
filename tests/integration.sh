@@ -133,7 +133,7 @@ docker info >/dev/null 2>&1 || abort 'the Docker daemon is not reachable'
 for img in kubedok-server:dev kubedok-nginx:dev kubedok-postgres:dev; do
   docker image inspect "${img}" >/dev/null 2>&1 \
     || abort "Missing image ${img}.
-    These are built from the application repository, github.com/glikaj/kubedok.
+    These are built from the application repository, github.com/Codevider/kubedok.
     From a checkout of it:
       docker build -f infra/docker/server.Dockerfile   -t kubedok-server:dev   .
       docker build -f infra/docker/nginx.Dockerfile    -t kubedok-nginx:dev    .

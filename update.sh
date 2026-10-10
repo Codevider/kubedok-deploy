@@ -16,7 +16,7 @@
 # that fails before it leaves releases/ and `previous` exactly as they were.
 #
 # Rollback caveat: rolling an image back does NOT roll back a database
-# migration. See https://github.com/glikaj/kubedok/blob/main/docs/release-process.md
+# migration. See https://github.com/Codevider/kubedok/blob/main/docs/release-process.md
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -138,7 +138,7 @@ if [ -n "${CURRENT_PG_MAJOR}" ] && [ "${CURRENT_PG_MAJOR}" != "${NEW_PG_MAJOR}" 
   die "Release ${NEW_VERSION} expects PostgreSQL ${NEW_PG_MAJOR}, but this install runs ${CURRENT_PG_MAJOR}.
     A major-version upgrade requires a dump and reload and is deliberately not
     automated here. Back up first, then follow the PostgreSQL upgrade section
-    in https://github.com/glikaj/kubedok/blob/main/docs/infrastructure.md."
+    in https://github.com/Codevider/kubedok/blob/main/docs/infrastructure.md."
 fi
 
 if [ "${CHECK_ONLY}" = "true" ]; then

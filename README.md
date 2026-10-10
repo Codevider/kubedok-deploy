@@ -1,6 +1,6 @@
 # kubedok-deploy
 
-Install, update, and operate [Kubedok](https://github.com/glikaj/kubedok) on
+Install, update, and operate [Kubedok](https://github.com/Codevider/kubedok) on
 a server.
 
 Production hosts clone or download only this repository. The application
@@ -12,7 +12,7 @@ or update Kubedok.
 On a fresh Debian or Ubuntu server:
 
 ```bash
-git clone https://github.com/glikaj/kubedok-deploy.git kubedok
+git clone https://github.com/Codevider/kubedok-deploy.git kubedok
 cd kubedok
 sudo KUBEDOK_HOST=kubedok.example.com \
      KUBEDOK_LETSENCRYPT_EMAIL=admin@example.com \
@@ -73,7 +73,7 @@ mode — it leaves edge-to-origin traffic unencrypted across the internet.
 
 Full details, including how to use a Cloudflare Origin CA certificate
 instead, are in
-[infrastructure.md](https://github.com/glikaj/kubedok/blob/main/docs/infrastructure.md).
+[infrastructure.md](https://github.com/Codevider/kubedok/blob/main/docs/infrastructure.md).
 
 ## Operate
 
@@ -119,7 +119,7 @@ Generate a registration token in the Kubedok UI, then on each Docker host you
 want to manage:
 
 ```bash
-git clone https://github.com/glikaj/kubedok-deploy.git kubedok
+git clone https://github.com/Codevider/kubedok-deploy.git kubedok
 cd kubedok
 sudo ./scripts/agent-install.sh --token <token> --api-url https://kubedok.example.com
 ```
@@ -137,7 +137,7 @@ with PostgreSQL, the API and nginx in one container) move to the current
 release with `migrate-from-monolith.sh`, run on the same server from a clone:
 
 ```bash
-git clone https://github.com/glikaj/kubedok-deploy.git kubedok
+git clone https://github.com/Codevider/kubedok-deploy.git kubedok
 cd kubedok
 sudo ./migrate-from-monolith.sh --check     # report, change nothing
 sudo ./migrate-from-monolith.sh --dry-run   # rehearse on a copy of the data
@@ -179,7 +179,7 @@ containers keep running, but they cannot deploy. On each managed host, move
 the agent to the release's, as the same host:
 
 ```bash
-git clone https://github.com/glikaj/kubedok-deploy.git kubedok
+git clone https://github.com/Codevider/kubedok-deploy.git kubedok
 cd kubedok
 sudo ./scripts/agent-install.sh --adopt
 ```
@@ -333,7 +333,7 @@ tagged.
 `KUBEDOK_RELEASE` accepts a channel name (`stable`) or an exact version
 (`1.2.3`).
 
-See [the release process](https://github.com/glikaj/kubedok/blob/main/docs/release-process.md)
+See [the release process](https://github.com/Codevider/kubedok/blob/main/docs/release-process.md)
 for the manifest contract.
 
 ## Testing
@@ -393,9 +393,9 @@ path is served over HTTPS too. Let's Encrypt is never contacted. Set
 
 ## Documentation
 
-- [Infrastructure](https://github.com/glikaj/kubedok/blob/main/docs/infrastructure.md)
+- [Infrastructure](https://github.com/Codevider/kubedok/blob/main/docs/infrastructure.md)
   — topology, environment variables, operations
-- [Release process](https://github.com/glikaj/kubedok/blob/main/docs/release-process.md)
+- [Release process](https://github.com/Codevider/kubedok/blob/main/docs/release-process.md)
   — versioning and the manifest contract
 
 ## License

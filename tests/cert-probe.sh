@@ -63,7 +63,7 @@ docker info >/dev/null 2>&1 || abort 'the Docker daemon is not reachable'
 docker compose version >/dev/null 2>&1 || abort 'the Docker Compose plugin is required'
 docker image inspect "${NGINX_IMAGE}" >/dev/null 2>&1 \
   || abort "Missing image ${NGINX_IMAGE}.
-    Build it from the application repository, github.com/glikaj/kubedok:
+    Build it from the application repository, github.com/Codevider/kubedok:
       docker build -f infra/docker/nginx.Dockerfile -t kubedok-nginx:dev .
     or point KUBEDOK_TEST_NGINX_IMAGE at a released image."
 info "nginx image ${NGINX_IMAGE}"

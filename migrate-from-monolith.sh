@@ -2,7 +2,7 @@
 #
 # Move a single-container Kubedok install to the current release.
 #
-#   git clone https://github.com/glikaj/kubedok-deploy.git kubedok
+#   git clone https://github.com/Codevider/kubedok-deploy.git kubedok
 #   cd kubedok
 #   sudo ./migrate-from-monolith.sh --check     # report, change nothing
 #   sudo ./migrate-from-monolith.sh --dry-run   # rehearse on a copy of the data
@@ -48,7 +48,7 @@ if [ ! -f "${SCRIPT_DIR}/scripts/common.sh" ] || [ ! -f "${SCRIPT_DIR}/setup.sh"
 migrate-from-monolith.sh needs setup.sh, scripts/ and compose/ beside it.
 Clone the repository and run it from there:
 
-  git clone https://github.com/glikaj/kubedok-deploy.git kubedok
+  git clone https://github.com/Codevider/kubedok-deploy.git kubedok
   cd kubedok
   sudo ./migrate-from-monolith.sh --check
 

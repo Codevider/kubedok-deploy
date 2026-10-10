@@ -19,5 +19,5 @@
   "postgresMajor": 16,
   "minimumAgentVersion": "1.4.9",
   "minimumUpgradeFrom": "1.4.9",
-  "notes": "https://github.com/glikaj/kubedok/releases/tag/v1.4.10"
+  "notes": "https://github.com/Codevider/kubedok/releases/tag/v1.4.10"
 }
