@@ -32,6 +32,13 @@
 # Docker never starts it beside the new install; nothing else about it, or its
 # volume, is changed. If anything fails after it stops, it is started again.
 #
+# The 0.0.x docs started it with `docker run -d --rm --name kubedok-server`.
+# Stopping such a container removes it, with the anonymous volume its data is
+# on, so a container that only holds that volume, kubedok-monolith-data, is
+# made first; going back starts it again from there, without --rm. One that is
+# kept when it stops, but named like a container of the new install, is
+# renamed kubedok-monolith.
+#
 # Why not just a dump and restore: from 1.4.9 on, releases ship their database
 # migrations squashed into one, under the name of the first migration the old
 # image applied. Restored as it is, the old database would look current and
@@ -71,6 +78,12 @@ MONOLITH_INIT_CHECKSUM=dbfd99664aeef39324f64f2e3feae702a91c763a36a4534f6392ecb4b
 SCRATCH_NET=kubedok-migrate
 SCRATCH_PG=kubedok-migrate-pg
 SOURCE_PG=kubedok-migrate-source
+# Holds the volumes of an old container started with --rm once stopping it has
+# removed it: a container that only refers to them, never started.
+KEEPER=kubedok-monolith-data
+# Where an old container named like one of the new install's is moved.
+ASIDE=kubedok-monolith
+NEW_CONTAINERS="kubedok-postgres kubedok-server kubedok-nginx"
 
 # ── Options ──────────────────────────────────────────────────────────────────
 MODE=migrate
@@ -132,6 +145,11 @@ chmod 700 "${WORK}"
 STOPPED_OLD=false      # this run stopped the old container
 OLD_WAS_RUNNING=false
 OLD_RESTART="no"
+OLD_ID=""
+OLD_AUTOREMOVE=false   # started with --rm: stopping it removes it
+OLD_SOURCE=""          # what holds the old data once stopped: it, the keeper, or it renamed
+RENAMED_OLD=""         # the name it was moved to, when it had a new container's name
+MADE_KEEPER=false      # this run created KEEPER
 COMMITTED=false        # the new install is up and checked
 CREATED_ROOT=false     # KUBEDOK_ROOT is this run's
 CREATED_NETWORKS=""    # networks setup.sh made during this run
@@ -197,13 +215,117 @@ read_old_facts() {
     OLD_HTTP_PORT=80; OLD_HTTP_BIND=""
   fi
   OLD_COMPOSE_PROJECT="$(docker container inspect -f '{{index .Config.Labels "com.docker.compose.project"}}' "${OLD_CONTAINER}" 2>/dev/null || true)"
+  OLD_ID="$(docker container inspect -f '{{.Id}}' "${OLD_CONTAINER}")"
+  OLD_AUTOREMOVE="$(docker container inspect -f '{{.HostConfig.AutoRemove}}' "${OLD_CONTAINER}")"
+  OLD_SOURCE="${OLD_CONTAINER}"
 
-  # Stopping a container started with --rm deletes it, and going back needs it.
-  [ "$(docker container inspect -f '{{.HostConfig.AutoRemove}}' "${OLD_CONTAINER}")" != "true" ] \
-    || die "${OLD_CONTAINER} was started with --rm, so stopping it would delete it and leave nothing to go back to. Recreate it without --rm, on the same volume, and run this again."
+  # Its volumes and host directories, as -v options: what holds or reopens its
+  # data names them itself rather than borrowing them with --volumes-from. A
+  # chain of those that loops back, as KEEPER and the old container started
+  # again from it would make, crashes Docker Desktop's backend.
+  OLD_MOUNT_ARGS=()
+  local type name source dest rw
+  while IFS='|' read -r type name source dest rw; do
+    rw="$([ "${rw}" = "false" ] && echo ":ro" || true)"
+    case "${type}" in
+      volume) [ -z "${name}" ] || OLD_MOUNT_ARGS+=(-v "${name}:${dest}${rw}") ;;
+      bind) OLD_MOUNT_ARGS+=(-v "${source}:${dest}${rw}") ;;
+    esac
+  done < <(docker container inspect -f '{{range .Mounts}}{{.Type}}|{{.Name}}|{{.Source}}|{{.Destination}}|{{.RW}}{{println}}{{end}}' "${OLD_CONTAINER}")
+
   # The data has to be the container's own PostgreSQL.
   [ -z "$(old_env DATABASE_URL)" ] \
     || die "${OLD_CONTAINER} is set to use an external database (DATABASE_URL), which this script does not move."
+}
+
+# A volume Docker named itself, because the container was given none.
+old_volume_is_anonymous() { [[ "${OLD_VOLUME}" =~ ^[0-9a-f]{64}$ ]]; }
+
+# Whether KEEPER exists and holds the old data volume.
+keeper_holds_data() {
+  docker container inspect -f '{{range .Mounts}}{{if .Name}}{{.Name}}{{else}}{{.Source}}{{end}}|{{.Destination}}{{println}}{{end}}' \
+    "${KEEPER}" 2>/dev/null | grep -qxF -- "${OLD_VOLUME}|${OLD_PGDATA}"
+}
+
+# The command that makes KEEPER, to run by hand before the migration if the
+# old container must not be left at risk until then.
+keeper_command() {
+  local arg
+  printf 'docker create --name %s ' "${KEEPER}"
+  for arg in "${OLD_MOUNT_ARGS[@]}"; do printf '%q ' "${arg}"; done
+  printf -- '--entrypoint true %s' "${OLD_IMAGE_ID}"
+}
+
+# Before an old container started with --rm is stopped: KEEPER is made to hold
+# its volumes, so they outlive it, and what starting it again takes is
+# written down (OLD_RUN_ARGS, OLD_EXTRA_NETWORKS).
+OLD_RUN_ARGS=()
+OLD_EXTRA_NETWORKS=()
+prepare_autoremove_stop() {
+  if docker container inspect "${KEEPER}" >/dev/null 2>&1; then
+    keeper_holds_data \
+      || die "A container named ${KEEPER} exists but does not hold ${OLD_CONTAINER}'s data. Rename or remove it, then run this again."
+  else
+    docker create --name "${KEEPER}" "${OLD_MOUNT_ARGS[@]}" --entrypoint true "${OLD_IMAGE_ID}" >/dev/null \
+      || die "Could not create ${KEEPER} to keep ${OLD_CONTAINER}'s data."
+    MADE_KEEPER=true
+  fi
+  keeper_holds_data || die "${KEEPER} does not hold ${OLD_CONTAINER}'s data, so stopping it would lose it."
+  ok "${KEEPER} holds ${OLD_CONTAINER}'s data, which outlives it now"
+
+  ( umask 077; printf '%s\n' "${OLD_ENV}" > "${WORK}/old.env" )
+  OLD_RUN_ARGS=(--name "${OLD_CONTAINER}" --restart unless-stopped --env-file "${WORK}/old.env")
+  local mode="${OLD_NETWORK_MODE}" net aliases alias port ip host list=()
+  case "${mode}" in
+    default|bridge|"") mode="" ;;
+    container:*) die "${OLD_CONTAINER} shares another container's network, so it could not be started again by itself." ;;
+    *) OLD_RUN_ARGS+=(--network "${mode}") ;;
+  esac
+  while IFS='|' read -r net aliases; do
+    [ -n "${net}" ] || continue
+    if [ "${net}" = "${mode}" ]; then
+      IFS=, read -r -a list <<<"${aliases}"
+      for alias in ${list[@]+"${list[@]}"}; do
+        [ "${alias}" = "${OLD_ID:0:12}" ] || [ "${alias}" = "${OLD_CONTAINER}" ] || OLD_RUN_ARGS+=(--network-alias "${alias}")
+      done
+    elif [ "${net}" != "bridge" ] && [ "${net}" != "host" ]; then
+      OLD_EXTRA_NETWORKS+=("${net}|${aliases}")
+    fi
+  done < <(docker container inspect -f '{{range $n, $s := .NetworkSettings.Networks}}{{$n}}|{{join $s.Aliases ","}}{{println}}{{end}}' "${OLD_CONTAINER}")
+  while IFS='|' read -r port ip host; do
+    [ -n "${port}" ] || continue
+    if [ -n "${host}" ]; then
+      OLD_RUN_ARGS+=(-p "${ip:+${ip}:}${host}:${port}")
+    else
+      OLD_RUN_ARGS+=(-p "${ip:+${ip}::}${port}")
+    fi
+  done < <(docker container inspect -f '{{range $p, $b := .HostConfig.PortBindings}}{{range $b}}{{$p}}|{{.HostIp}}|{{.HostPort}}{{println}}{{end}}{{end}}' "${OLD_CONTAINER}")
+  OLD_RUN_ARGS+=("${OLD_MOUNT_ARGS[@]}" "${OLD_IMAGE_ID}")
+}
+
+# Docker removes a --rm container once it has stopped, a moment later.
+wait_until_removed() {
+  local deadline=$(( SECONDS + 60 ))
+  while docker container inspect "${OLD_ID}" >/dev/null 2>&1; do
+    (( SECONDS < deadline )) || return 1
+    sleep 1
+  done
+}
+
+# Starts the old container again after a --rm stop removed it, as written down
+# by prepare_autoremove_stop, without --rm this time.
+recreate_old() {
+  local entry net alias args list=()
+  docker run -d "${OLD_RUN_ARGS[@]}" >/dev/null || return 1
+  for entry in ${OLD_EXTRA_NETWORKS[@]+"${OLD_EXTRA_NETWORKS[@]}"}; do
+    net="${entry%%|*}"; args=()
+    IFS=, read -r -a list <<<"${entry#*|}"
+    for alias in ${list[@]+"${list[@]}"}; do
+      [ "${alias}" = "${OLD_ID:0:12}" ] || [ "${alias}" = "${OLD_CONTAINER}" ] || args+=(--alias "${alias}")
+    done
+    docker network connect ${args[@]+"${args[@]}"} "${net}" "${OLD_CONTAINER}" >/dev/null 2>&1 \
+      || warn "Could not connect ${OLD_CONTAINER} to the network ${net} again."
+  done
 }
 
 # A file from the old data directory, read without starting PostgreSQL.
@@ -291,14 +413,16 @@ wait_for_pg() {
 }
 
 # Opens the old data directory once the old container is stopped: the same
-# image, as the postgres user, with no network. Never while it runs: two
-# servers on one data directory corrupt it.
+# image, as the postgres user, with no network, on the old container's own
+# mounts. Never while it runs: two servers on one data directory corrupt it.
+# OLD_SOURCE is what holds the data then: the old container, the name it was
+# moved to, or KEEPER once a --rm stop has removed it.
 start_source_db() {
-  [ "$(docker container inspect -f '{{.State.Running}}' "${OLD_CONTAINER}")" = "false" ] \
+  [ "$(docker container inspect -f '{{.State.Running}}' "${OLD_SOURCE}" 2>/dev/null)" = "false" ] \
     || die "Refusing to open ${OLD_CONTAINER}'s data directory while the container runs."
   docker rm -f "${SOURCE_PG}" >/dev/null 2>&1 || true
   docker run -d --name "${SOURCE_PG}" --network none --user postgres \
-    --volumes-from "${OLD_CONTAINER}" --entrypoint postgres "${OLD_IMAGE_ID}" \
+    "${OLD_MOUNT_ARGS[@]}" --entrypoint postgres "${OLD_IMAGE_ID}" \
     -D "${OLD_PGDATA}" -c listen_addresses= >/dev/null \
     || die "Could not start PostgreSQL on ${OLD_CONTAINER}'s data."
   wait_for_pg "${SOURCE_PG}" "${OLD_PG_USER}" "${OLD_PG_DB}" 180 \
@@ -385,12 +509,48 @@ carry_old_settings() {
   done
 }
 
+# How the old container was started, as far as stopping it and installing the
+# new one beside it go. The 0.0.x docs started it as
+#   docker run -d --rm --name kubedok-server -p 80:80 approxx/kubedok-server
+# which leaves the data on an anonymous volume that --rm deletes with the
+# container, under the name the new install's server takes.
+VOLUME_BLOCKS=false
+report_container_setup() {
+  local name
+  if [ "${OLD_AUTOREMOVE}" = "true" ]; then
+    if keeper_holds_data; then
+      ok "${OLD_CONTAINER} was started with --rm; ${KEEPER} holds its data, so the data outlives it"
+    elif old_volume_is_anonymous; then
+      note "${OLD_CONTAINER} was started with --rm and keeps its data on an anonymous volume: if it stops, crashes, or Docker or the host restarts, Docker removes the container and that volume with it. Until the migration, make a container that holds the volume, which changes nothing else: $(keeper_command)"
+    else
+      ok "${OLD_CONTAINER} was started with --rm; its data is on ${OLD_VOLUME}, which outlives it"
+    fi
+    ok "Stopping it removes it: the migration keeps its data in ${KEEPER} first, and starts it again from there, without --rm, if it has to go back"
+  fi
+  for name in ${NEW_CONTAINERS}; do
+    [ "${OLD_CONTAINER}" = "${name}" ] || continue
+    if [ "${OLD_AUTOREMOVE}" = "true" ]; then
+      ok "It is named ${name}, like the new install's container, and leaves the name free when it stops"
+    else
+      ok "It is named ${name}, like the new install's container: the migration renames it ${ASIDE} when it stops it"
+    fi
+  done
+  if [ "${OLD_VOLUME}" = "kubedok_postgres_data" ]; then
+    VOLUME_BLOCKS=true
+    note "${OLD_CONTAINER} keeps its data in the volume kubedok_postgres_data, the name the new install's database takes. Move the data to a volume of another name first; see \"Move from the single-container image\" in the README. Never remove that volume: it holds the old install's data."
+  fi
+}
+
 report_old_install() {
   local counts users hosts envs stacks services registries certs
   printf '\n'
   printf '  Container      %s (%s)\n' "${OLD_CONTAINER}" "$([ "${OLD_WAS_RUNNING}" = "true" ] && echo running || echo stopped)"
   printf '  Image          %s\n' "${OLD_IMAGE}"
-  printf '  Data           %s on %s\n' "${OLD_PGDATA}" "${OLD_VOLUME:-<the container itself>}"
+  if old_volume_is_anonymous; then
+    printf '  Data           %s on an anonymous volume (%s)\n' "${OLD_PGDATA}" "${OLD_VOLUME:0:12}"
+  else
+    printf '  Data           %s on %s\n' "${OLD_PGDATA}" "${OLD_VOLUME:-<the container itself>}"
+  fi
   printf '  Database       %s/%s\n' "${OLD_PG_USER}" "${OLD_PG_DB}"
   if [ -n "${OLD_HTTP_PORT}" ]; then
     printf '  Published on   %s:%s\n' "${OLD_HTTP_BIND:-0.0.0.0}" "${OLD_HTTP_PORT}"
@@ -418,6 +578,8 @@ report_old_install() {
   if [ -n "${free_kb}" ] && [ "${free_kb}" -lt $(( size_kb * 3 + 262144 )) ]; then
     note "Only $(( free_kb / 1024 )) MB free in ${WORK_BASE} for the dumps of a $(( size_kb / 1024 )) MB database. Point KUBEDOK_MIGRATE_WORKDIR somewhere roomier if it runs out."
   fi
+
+  report_container_setup
 
   # Migration history: the first migration must be the one the single-container
   # images from 0.0.9 on applied. The full chain is checked on the scratch copy.
@@ -988,14 +1150,27 @@ check_fresh_target() {
   if [ -e "${KUBEDOK_ROOT}" ] && [ -n "$(ls -A "${KUBEDOK_ROOT}" 2>/dev/null)" ]; then
     die "${KUBEDOK_ROOT} already holds an install. The migration makes a new one; move it away first."
   fi
+  [ "${VOLUME_BLOCKS}" != "true" ] \
+    || die "${OLD_CONTAINER}'s data is in the volume kubedok_postgres_data, which the new install's database needs (see above). Never remove it: it holds the old install's data."
   docker volume inspect kubedok_postgres_data >/dev/null 2>&1 \
-    && die "The volume kubedok_postgres_data already exists. The migration makes a new install; remove it first if its data is not needed."
-  local name
-  for name in kubedok-postgres kubedok-server kubedok-nginx; do
-    docker container inspect "${name}" >/dev/null 2>&1 \
-      && die "A container named ${name} already exists. The migration makes a new install; remove it first."
+    && die "The volume kubedok_postgres_data already exists, from an earlier install. The migration makes a new install; remove it first if its data is not needed."
+  # The old container itself may carry one of the names: it moves aside.
+  local name id
+  for name in ${NEW_CONTAINERS}; do
+    id="$(docker container inspect -f '{{.Id}}' "${name}" 2>/dev/null || true)"
+    [ -z "${id}" ] || [ "${id}" = "${OLD_ID}" ] \
+      || die "A container named ${name} already exists. The migration makes a new install; remove it first."
   done
+  if needs_aside && docker container inspect "${ASIDE}" >/dev/null 2>&1; then
+    die "${OLD_CONTAINER} has to move aside to ${ASIDE} when it stops, and a container of that name exists. Remove or rename it first."
+  fi
   return 0
+}
+
+# Whether the old container, stopped and kept, would hold a name the new
+# install's containers take. One started with --rm leaves when it stops.
+needs_aside() {
+  [ "${OLD_AUTOREMOVE}" != "true" ] && [[ " ${NEW_CONTAINERS} " == *" ${OLD_CONTAINER} "* ]]
 }
 
 run_setup() {
@@ -1042,8 +1217,18 @@ verify_new_install() {
 rollback() {
   err "The migration failed. Going back to ${OLD_CONTAINER}."
   stop_source_db
-  docker rm -f kubedok-nginx kubedok-server kubedok-postgres >/dev/null 2>&1 || true
-  docker volume rm kubedok_postgres_data >/dev/null 2>&1 || true
+  # The new install's containers and database, never the old ones, which can
+  # carry the same names.
+  local name id
+  for name in ${NEW_CONTAINERS}; do
+    id="$(docker container inspect -f '{{.Id}}' "${name}" 2>/dev/null || true)"
+    if [ -n "${id}" ] && [ "${id}" != "${OLD_ID}" ]; then
+      docker rm -f "${id}" >/dev/null 2>&1 || true
+    fi
+  done
+  if [ "${OLD_VOLUME}" != "kubedok_postgres_data" ]; then
+    docker volume rm kubedok_postgres_data >/dev/null 2>&1 || true
+  fi
   local net
   for net in ${CREATED_NETWORKS}; do
     docker network rm "${net}" >/dev/null 2>&1 || true
@@ -1058,6 +1243,25 @@ rollback() {
       warn "The unfinished install is in ${aside}, for its logs and settings. It holds secrets: remove it when done."
     fi
   fi
+  if [ -n "${RENAMED_OLD}" ] && ! docker rename "${RENAMED_OLD}" "${OLD_CONTAINER}" >/dev/null 2>&1; then
+    err "Could not give ${RENAMED_OLD} its name back. Rename it with: docker rename ${RENAMED_OLD} ${OLD_CONTAINER}"
+  fi
+  # Started with --rm, stopping it removed it: started again from KEEPER,
+  # which holds its data, as it was, without --rm.
+  if [ "${OLD_AUTOREMOVE}" = "true" ] && ! docker container inspect "${OLD_ID}" >/dev/null 2>&1; then
+    if recreate_old && ( wait_for_container_health "${OLD_CONTAINER}" 240 ) >/dev/null 2>&1; then
+      err "${OLD_CONTAINER} is running again, on its own data, which was never changed: a new container, as it was started but without --rm."
+      if [ "${MADE_KEEPER}" = "true" ]; then
+        docker rm "${KEEPER}" >/dev/null 2>&1 || true
+      fi
+    else
+      local env_file="${WORK_BASE}/kubedok-monolith-${STAMP}.env"
+      ( umask 077; cp "${WORK}/old.env" "${env_file}" ) 2>/dev/null || true
+      err "Could not start ${OLD_CONTAINER} again by itself. ${KEEPER} holds its data. Start it with:"
+      err "  docker rm -f ${OLD_CONTAINER}; docker run -d $(old_run_command "${env_file}")"
+    fi
+    return 0
+  fi
   docker update --restart "${OLD_RESTART}" "${OLD_CONTAINER}" >/dev/null 2>&1 || true
   if [ "${OLD_WAS_RUNNING}" = "true" ]; then
     if docker start "${OLD_CONTAINER}" >/dev/null 2>&1 \
@@ -1069,6 +1273,16 @@ rollback() {
   else
     err "${OLD_CONTAINER} was stopped before the migration and stays stopped."
   fi
+}
+
+# OLD_RUN_ARGS as a command to copy, with ENV_FILE for the environment file.
+old_run_command() {
+  local env_file="$1" arg next=""
+  for arg in "${OLD_RUN_ARGS[@]}"; do
+    if [ "${next}" = "env" ]; then arg="${env_file}"; next=""; fi
+    [ "${arg}" != "--env-file" ] || next="env"
+    printf '%q ' "${arg}"
+  done
 }
 
 # ── Summary ──────────────────────────────────────────────────────────────────
@@ -1084,20 +1298,39 @@ print_next_steps() {
   printf '  First backup     %s/kubedok-%s-migrated.tar.gz\n' "${backups}" "${STAMP}"
   printf '  Old database     %s/monolith-%s.sql.gz (as the old install left it)\n' "${backups}" "${STAMP}"
   printf '\n'
-  printf '  The old container is stopped, with restart policy no, and its data is\n'
-  printf '  untouched. To go back, before any agent has moved to the new version:\n'
-  printf '    sudo %s && docker update --restart %s %s && docker start %s\n' \
-    "$(command_hint uninstall)" "${OLD_RESTART}" "${OLD_CONTAINER}" "${OLD_CONTAINER}"
+  # What is left of the old install, and how to go back to it.
+  local kept="${RENAMED_OLD:-${OLD_CONTAINER}}" remove
+  if [ "${OLD_AUTOREMOVE}" = "true" ]; then
+    printf '  The old container was started with --rm, so stopping it removed it. Its\n'
+    printf '  data is untouched, held by %s. To go back, before any agent has\n' "${KEEPER}"
+    printf '  moved to the new version, start it again, without --rm this time:\n'
+    printf '    sudo %s && docker run -d %s\n' "$(command_hint uninstall)" \
+      "$(old_run_command "${backups}/monolith-${STAMP}.env")"
+    kept="${KEEPER}"
+  elif [ -n "${RENAMED_OLD}" ]; then
+    printf '  The old container is stopped and renamed %s, with restart policy no,\n' "${RENAMED_OLD}"
+    printf '  and its data is untouched. To go back, before any agent has moved to the\n'
+    printf '  new version:\n'
+    printf '    sudo %s && docker rename %s %s && docker update --restart %s %s && docker start %s\n' \
+      "$(command_hint uninstall)" "${RENAMED_OLD}" "${OLD_CONTAINER}" "${OLD_RESTART}" "${OLD_CONTAINER}" "${OLD_CONTAINER}"
+  else
+    printf '  The old container is stopped, with restart policy no, and its data is\n'
+    printf '  untouched. To go back, before any agent has moved to the new version:\n'
+    printf '    sudo %s && docker update --restart %s %s && docker start %s\n' \
+      "$(command_hint uninstall)" "${OLD_RESTART}" "${OLD_CONTAINER}" "${OLD_CONTAINER}"
+  fi
   if [ -n "${OLD_COMPOSE_PROJECT}" ]; then
     printf '  It was started by Docker Compose (project %s): do not bring that project\n' "${OLD_COMPOSE_PROJECT}"
     printf '  up again, or it takes the port back.\n'
   fi
-  printf '  Once you are satisfied, remove it:\n'
-  printf '    docker rm %s' "${OLD_CONTAINER}"
-  if [ -n "${OLD_VOLUME}" ] && [[ "${OLD_VOLUME}" != /* ]]; then
-    printf ' && docker volume rm %s' "${OLD_VOLUME}"
+  if old_volume_is_anonymous; then
+    remove="docker rm -v ${kept}"
+  elif [ -n "${OLD_VOLUME}" ] && [[ "${OLD_VOLUME}" != /* ]]; then
+    remove="docker rm ${kept} && docker volume rm ${OLD_VOLUME}"
+  else
+    remove="docker rm ${kept}"
   fi
-  printf '\n\n'
+  printf '  Once you are satisfied, remove it and its data:\n    %s\n\n' "${remove}"
   if [ "${OLD_HOST_COUNT:-0}" != "0" ]; then
     printf '  %sHosts%s: %s. Their agents reconnect to this install and their containers keep\n' "${_c_yellow}" "${_c_reset}" "${OLD_HOST_COUNT}"
     printf '  running, but an agent older than %s cannot deploy. On each host, from a clone\n' "$(manifest_field minimumAgentVersion "${TARGET_MANIFEST}")"
@@ -1139,7 +1372,7 @@ main() {
   if [ "${MODE}" = "check" ]; then
     stop_source_db
     printf '\n'
-    if [ "${INFLIGHT_BLOCKS}" = "true" ] || [ "${PORTS_BLOCK}" = "true" ]; then
+    if [ "${INFLIGHT_BLOCKS}" = "true" ] || [ "${PORTS_BLOCK}" = "true" ] || [ "${VOLUME_BLOCKS}" = "true" ]; then
       warn "Not ready yet: see the warnings above."
     else
       ok "Ready to migrate. Rehearse it on a copy with --dry-run; nothing was changed."
@@ -1185,11 +1418,27 @@ main() {
 
   # From here on, a failure brings the old container back (on_exit).
   STOPPED_OLD=true
-  docker update --restart no "${OLD_CONTAINER}" >/dev/null
+  if [ "${OLD_AUTOREMOVE}" = "true" ]; then
+    prepare_autoremove_stop
+  else
+    docker update --restart no "${OLD_CONTAINER}" >/dev/null
+  fi
   if [ "${OLD_WAS_RUNNING}" = "true" ]; then
     log "Stopping ${OLD_CONTAINER}"
     docker stop -t 120 "${OLD_CONTAINER}" >/dev/null || die "Could not stop ${OLD_CONTAINER}."
     ok "${OLD_CONTAINER} stopped; Kubedok is down until the new install is up"
+  fi
+  if [ "${OLD_AUTOREMOVE}" = "true" ]; then
+    wait_until_removed || die "${OLD_CONTAINER} was started with --rm but was not removed when it stopped."
+    OLD_SOURCE="${KEEPER}"
+  elif needs_aside; then
+    docker rename "${OLD_CONTAINER}" "${ASIDE}" \
+      || die "Could not rename ${OLD_CONTAINER} to ${ASIDE}, out of the new install's way."
+    RENAMED_OLD="${ASIDE}"
+    OLD_SOURCE="${ASIDE}"
+    ok "${OLD_CONTAINER} renamed ${ASIDE}, leaving its name to the new install"
+  fi
+  if [ "${OLD_WAS_RUNNING}" = "true" ]; then
     start_source_db
   fi
   dump_old_database
@@ -1203,6 +1452,9 @@ main() {
   install -d -m 700 "${KUBEDOK_BACKUPS_DIR}"
   install -m 600 "${ARCHIVE}" "${KUBEDOK_BACKUPS_DIR}/kubedok-${STAMP}-migrated.tar.gz"
   ( umask 077; gzip -c "${WORK}/monolith.sql" > "${KUBEDOK_BACKUPS_DIR}/monolith-${STAMP}.sql.gz" )
+  if [ "${OLD_AUTOREMOVE}" = "true" ]; then
+    install -m 600 "${WORK}/old.env" "${KUBEDOK_BACKUPS_DIR}/monolith-${STAMP}.env"
+  fi
   print_next_steps
 }
 

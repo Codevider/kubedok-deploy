@@ -25,6 +25,12 @@
 # the agents in a Docker-in-Docker container, so nothing here touches the
 # host's own containers. Takes about 20 minutes.
 #
+# The old container is started as the 0.0.x docs had it, `docker run -d --rm
+# --name kubedok-server -p 80:80`: its data on an anonymous volume that --rm
+# deletes with it, under the name the new install's server takes. With
+# KUBEDOK_TEST_OLD_STYLE=kept it keeps that name but is kept when it stops,
+# with a named volume and a restart policy, so it has to move aside instead.
+#
 # To test a release that is not published, point KUBEDOK_TEST_MANIFEST at its
 # manifest. Images it names on localhost:PORT come from a registry container
 # published there, named by KUBEDOK_TEST_REGISTRY: the agent host reaches it
@@ -39,8 +45,12 @@ SERVE_DIR="${WORK}/serve"
 CLONE="${WORK}/clone"
 
 RUNNER="kdtest-runner"        # runs the scripts, as a server would
-OLD="kdtest-monolith"         # the single-container install
-OLD_VOLUME="kdtest-monolith-data"
+OLD="kubedok-server"          # the single-container install, as the 0.0.x docs named it
+OLD_STYLE="${KUBEDOK_TEST_OLD_STYLE:-docs}"
+OLD_VOLUME="kdtest-monolith-data" # kept style only; docs style gets an anonymous one
+OLD_DATA_VOLUME=""                # the volume its data is on, whatever its kind
+OLD_ASIDE="kubedok-monolith"      # where the migration moves a kept one
+KEEPER="kubedok-monolith-data"    # what holds a --rm one's data once it is removed
 AGENT_HOST="kdtest-host"      # Docker-in-Docker: the managed host
 NET="kdtest-net"              # where agents reach the control plane
 API_HOST="kubedok.test"       # the name agents know it by
@@ -186,8 +196,8 @@ cleanup() {
   fi
   step 'Cleaning up'
   docker rm -f -v "${RUNNER}" "${REGISTRY_PROXY}" "${AGENT_HOST}" kubedok-nginx kubedok-server kubedok-postgres \
-    kubedok-migrate-pg kubedok-migrate-source "${OLD}" >/dev/null 2>&1 || true
-  docker volume rm "${OLD_VOLUME}" kubedok_postgres_data >/dev/null 2>&1 || true
+    kubedok-migrate-pg kubedok-migrate-source "${OLD}" "${OLD_ASIDE}" "${KEEPER}" >/dev/null 2>&1 || true
+  docker volume rm "${OLD_VOLUME}" ${OLD_DATA_VOLUME:+"${OLD_DATA_VOLUME}"} kubedok_postgres_data >/dev/null 2>&1 || true
   [ -z "${REGISTRY}" ] || docker network disconnect -f "${NET}" "${REGISTRY}" >/dev/null 2>&1 || true
   docker network rm "${NET}" kubedok-proxy kubedok-postgres kubedok-migrate >/dev/null 2>&1 || true
   rm -rf "${WORK}" 2>/dev/null || true
@@ -236,9 +246,18 @@ cp -R "${DEPLOY_DIR}/setup.sh" "${DEPLOY_DIR}/update.sh" "${DEPLOY_DIR}/migrate-
 step 'A 0.0.11 install with data, and a 0.0.11 agent'
 
 docker network create "${NET}" >/dev/null
-docker run -d --name "${OLD}" --restart unless-stopped --network "${NET}" --network-alias "${API_HOST}" \
-  -p "127.0.0.1:${HTTP_PORT}:80" -v "${OLD_VOLUME}:/var/lib/postgresql/data" "${OLD_IMAGE}" >/dev/null
+case "${OLD_STYLE}" in
+  docs)
+    docker run -d --rm --name "${OLD}" --network "${NET}" --network-alias "${API_HOST}" \
+      -p "127.0.0.1:${HTTP_PORT}:80" "${OLD_IMAGE}" >/dev/null ;;
+  kept)
+    docker run -d --name "${OLD}" --restart unless-stopped --network "${NET}" --network-alias "${API_HOST}" \
+      -p "127.0.0.1:${HTTP_PORT}:80" -v "${OLD_VOLUME}:/var/lib/postgresql/data" "${OLD_IMAGE}" >/dev/null ;;
+  *) abort "unknown KUBEDOK_TEST_OLD_STYLE ${OLD_STYLE}: docs or kept" ;;
+esac
 wait_healthy "${OLD}" 240 || abort 'the old install did not become healthy'
+OLD_DATA_VOLUME="$(docker container inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Name}}{{end}}{{end}}' "${OLD}")"
+info "old install started ${OLD_STYLE} style, its data on ${OLD_DATA_VOLUME:0:20}"
 info "old install on 127.0.0.1:${HTTP_PORT}"
 
 # Test values for this throwaway install only.
@@ -412,6 +431,15 @@ assert_contains "${out}" "Encryption key from the running API" 'it reads the key
 assert_contains "${out}" "opens every stored credential (2 values)" 'the key opens the registry password and the certificate'
 assert_contains "${out}" "1 load balancer(s) with a certificate" 'it finds the load balancer to convert'
 assert_contains "${out}" "shop: api, worker, then mongo" 'it says to redeploy mongo'"'"'s users before mongo'
+if [ "${OLD_STYLE}" = docs ]; then
+  assert_contains "${out}" "was started with --rm and keeps its data on an anonymous volume" \
+    'it warns that the data goes with the container'
+  assert_contains "${out}" "docker create --name ${KEEPER} -v ${OLD_DATA_VOLUME}:/var/lib/postgresql/data" \
+    'and says how to keep it until the migration, mounting it by name'
+  assert_contains "${out}" "leaves the name free when it stops" 'it sees the old container has the new server'"'"'s name'
+else
+  assert_contains "${out}" "the migration renames it ${OLD_ASIDE} when it stops it" 'it says the old container moves aside'
+fi
 assert_eq true "$(docker container inspect -f '{{.State.Running}}' "${OLD}")" 'the old install still runs'
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -438,10 +466,23 @@ set -e
 [ "${status}" -ne 0 ] && pass 'the migration fails' || fails 'the migration with a broken nginx succeeded'
 assert_contains "${out}" "Going back to ${OLD}" 'it says it goes back'
 assert_contains "${out}" "${OLD} is running again" 'it says the old install runs again'
+# The data volume a container keeps at /var/lib/postgresql/data.
+data_volume_of() {
+  docker container inspect -f '{{range .Mounts}}{{if eq .Destination "/var/lib/postgresql/data"}}{{.Name}}{{end}}{{end}}' "$1" 2>/dev/null || true
+}
 assert_eq true "$(docker container inspect -f '{{.State.Running}}' "${OLD}")" 'the old install runs'
 wait_healthy "${OLD}" 240 && pass 'and is healthy' || fails 'the old install is not healthy'
-assert_eq unless-stopped "$(docker container inspect -f '{{.HostConfig.RestartPolicy.Name}}' "${OLD}")" 'its restart policy is back'
-for c in kubedok-nginx kubedok-server kubedok-postgres kubedok-migrate-pg kubedok-migrate-source; do
+assert_eq "$(docker image inspect -f '{{.Id}}' "${OLD_IMAGE}")" "$(docker container inspect -f '{{.Image}}' "${OLD}")" \
+  "${OLD} is the old install again, not the new server"
+assert_eq "${OLD_DATA_VOLUME}" "$(data_volume_of "${OLD}")" 'on its own data'
+assert_eq unless-stopped "$(docker container inspect -f '{{.HostConfig.RestartPolicy.Name}}' "${OLD}")" 'and restarts by itself'
+if [ "${OLD_STYLE}" = docs ]; then
+  assert_eq false "$(docker container inspect -f '{{.HostConfig.AutoRemove}}' "${OLD}")" 'started again without --rm'
+  assert_fails "the ${KEEPER} the migration made is gone again" docker container inspect "${KEEPER}"
+else
+  assert_fails "${OLD_ASIDE} is gone: the old container has its name back" docker container inspect "${OLD_ASIDE}"
+fi
+for c in kubedok-nginx kubedok-postgres kubedok-migrate-pg kubedok-migrate-source; do
   assert_fails "no ${c} container is left" docker container inspect "${c}"
 done
 assert_fails 'no database volume is left' docker volume inspect kubedok_postgres_data
@@ -455,6 +496,16 @@ wait_for /hosts 'items | map(.status) | join(",")' online 120 \
 
 # ═══════════════════════════════════════════════════════════════════════════
 step 'TEST 4 — the migration'
+if [ "${OLD_STYLE}" = docs ]; then
+  # Going back started it without --rm; a first migration meets a --rm one,
+  # so it is made that again, on the same data.
+  docker stop "${OLD}" >/dev/null && docker rm "${OLD}" >/dev/null
+  docker run -d --rm --name "${OLD}" --network "${NET}" --network-alias "${API_HOST}" \
+    -p "127.0.0.1:${HTTP_PORT}:80" -v "${OLD_DATA_VOLUME}:/var/lib/postgresql/data" "${OLD_IMAGE}" >/dev/null
+  wait_healthy "${OLD}" 240 || abort 'the old install did not come back as a --rm container'
+  wait_for /hosts 'items | map(.status) | join(",")' online 120 || abort 'the old agent did not reconnect'
+fi
+OLD_ID_BEFORE="$(docker container inspect -f '{{.Id}}' "${OLD}")"
 OLD_JWT="$(docker exec "${OLD}" cat /var/lib/postgresql/data/.kubedok-secrets/jwt-secret)"
 OLD_KEY="$(docker exec "${OLD}" cat /var/lib/postgresql/data/.kubedok-secrets/registry-encryption-key)"
 set +e
@@ -464,8 +515,17 @@ assert_eq 0 "${status}" 'the migration succeeds'
 [ "${status}" -eq 0 ] || printf '%s\n' "${out}" | tail -40 | sed 's/^/      /'
 assert_contains "${out}" "Migrated ${OLD} to Kubedok ${STABLE}" 'it says it migrated'
 assert_contains "${out}" "shop: api, worker, then mongo" 'its next steps give the order to redeploy in'
-assert_eq false "$(docker container inspect -f '{{.State.Running}}' "${OLD}")" 'the old container is stopped'
-assert_eq no "$(docker container inspect -f '{{.HostConfig.RestartPolicy.Name}}' "${OLD}")" 'and will not start again by itself'
+if [ "${OLD_STYLE}" = docs ]; then
+  assert_fails 'the old container is gone, as --rm has it' docker container inspect "${OLD_ID_BEFORE}"
+  assert_eq "${OLD_DATA_VOLUME}" "$(data_volume_of "${KEEPER}")" "its data is kept, held by ${KEEPER}"
+  assert_contains "${out}" "docker run -d --name ${OLD} --restart unless-stopped" 'its next steps say how to start it again'
+  assert_ok 'with its environment kept beside the backups' inrun "ls ${INSTALL_ROOT}/backups/monolith-*.env"
+else
+  assert_eq false "$(docker container inspect -f '{{.State.Running}}' "${OLD_ASIDE}")" "the old container is stopped, as ${OLD_ASIDE}"
+  assert_eq no "$(docker container inspect -f '{{.HostConfig.RestartPolicy.Name}}' "${OLD_ASIDE}")" 'and will not start again by itself'
+  assert_eq "${OLD_DATA_VOLUME}" "$(data_volume_of "${OLD_ASIDE}")" 'on its own data, untouched'
+  assert_contains "${out}" "docker rename ${OLD_ASIDE} ${OLD}" 'its next steps say how to go back'
+fi
 for c in kubedok-postgres kubedok-server kubedok-nginx; do
   wait_healthy "${c}" 120 && pass "${c} is healthy" || fails "${c} is not healthy"
 done

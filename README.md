@@ -168,7 +168,36 @@ in front of the old install, already holds it.
 Kubedok is down for the few minutes it runs; containers on the managed hosts
 keep running. The old container is stopped, its restart policy set to `no`,
 and its volume left alone. If anything fails after the stop, it is started
-again. Deploys, rollouts or agent commands in flight hold it back, unless
+again.
+
+The 0.0.x docs started the old container with
+`docker run -d --rm --name kubedok-server -p 80:80 approxx/kubedok-server`.
+That puts its data on an anonymous volume, which Docker deletes with the
+container whenever it stops: a crash, a Docker restart or a reboot is enough.
+`--check` warns about it, and prints the command that makes
+`kubedok-monolith-data`, a container that only holds that volume and keeps it
+safe until the migration. The migration makes that container itself before it
+stops anything. If it has to go back, it starts `kubedok-server` again on that
+data, without `--rm`. An old container that survives being stopped but is
+named like one of the new install's containers is renamed `kubedok-monolith`.
+
+The 0.0.x docs' example of a persistent volume called it
+`kubedok_postgres_data`, which is the name of the new install's database
+volume. Move that data to a volume of another name first, while Kubedok can be
+down for a minute. Start the container again with the same options it had, its
+port and any `-e` settings:
+
+```bash
+image="$(docker container inspect -f '{{.Image}}' kubedok-server)"
+docker stop kubedok-server && docker rm kubedok-server
+docker volume create kubedok_monolith_data
+docker run --rm -v kubedok_postgres_data:/from:ro -v kubedok_monolith_data:/to --entrypoint cp "$image" -a /from/. /to/
+docker run -d --name kubedok-server --restart unless-stopped -p 80:80 \
+  -v kubedok_monolith_data:/var/lib/postgresql/data "$image"
+```
+
+Once it serves as before, remove the old volume with
+`docker volume rm kubedok_postgres_data`, and run the migration. Deploys, rollouts or agent commands in flight hold it back, unless
 `--force` records them as cancelled. What 0.0.x left only looking unfinished
 holds nothing back, and is closed in the move: a command whose result it
 recorded and then wrote over (a race fixed since), one never answered long
@@ -369,6 +398,14 @@ MongoDB keeping its data and both of its users reaching it throughout. Last it
 deploys an HTTPS load balancer whose certificate came over from the old
 install. Unlike the suite above it pulls the real images, so it needs network
 access; it takes about 20 minutes.
+
+The old container is started as the 0.0.x docs had it: `--rm`, named
+`kubedok-server`, its data on an anonymous volume. So the migration that fails
+has to start it again from the container that holds that volume, and the one
+that succeeds has to keep the volume when the container goes. With
+`KUBEDOK_TEST_OLD_STYLE=kept`, the old container keeps that name but survives
+being stopped, with a named volume and a restart policy, so it is renamed
+`kubedok-monolith` instead.
 
 To try a release before it is published, set `KUBEDOK_TEST_MANIFEST` to its
 manifest. If its images are on a local registry, published on
