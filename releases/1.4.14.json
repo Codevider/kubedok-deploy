@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "release": "1.4.14",
+  "publishedAt": "2026-10-12T12:02:16Z",
+  "gitRevision": "21a50079a2e6348c0ef9865521a9b8a457f750ff",
+  "images": {
+    "server": "approxx/kubedok-server@sha256:c3012f0a8e1ffbd0c1ff7c024890ddcd6b32034b842f953721cdcdbf8d54ecbc",
+    "nginx": "approxx/kubedok-nginx@sha256:50141853dc8a96409de9c06355aef4ec71ac724869cf134e45b04938357e3432",
+    "postgres": "approxx/kubedok-postgres@sha256:63ab4f3f7823a488676e3e3434a55658348b646043aa4525428c1fc148ae9666",
+    "agent": "approxx/kubedok-agent@sha256:1a066d154ee4054a4a18e20d9146c6b0eaad47c4b2967459ae10072e4445d189"
+  },
+  "builtFrom": {
+    "server": "21a50079a2e6348c0ef9865521a9b8a457f750ff",
+    "nginx": "21a50079a2e6348c0ef9865521a9b8a457f750ff",
+    "postgres": "4b059d0ec0b8266f11af578916945dd84ddb3d62",
+    "agent": "21a50079a2e6348c0ef9865521a9b8a457f750ff"
+  },
+  "agentVersion": "1.4.14",
+  "postgresMajor": 16,
+  "minimumAgentVersion": "1.4.9",
+  "minimumUpgradeFrom": "1.4.9",
+  "notes": "https://github.com/Codevider/kubedok/releases/tag/v1.4.14"
+}
