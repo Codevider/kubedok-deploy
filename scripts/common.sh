@@ -491,6 +491,17 @@ ensure_networks() {
   ensure_network "${KUBEDOK_NETWORK_PROXY}"
 }
 
+# ── Agent ────────────────────────────────────────────────────────────────────
+# Whether kubedok-agent here was started without Compose, as the docker run
+# command from Register host in the Kubedok UI starts it. Such an agent has no
+# agent.env; agent-update.sh takes it over the first time it updates it.
+agent_started_by_docker_run() {
+  local labels
+  labels="$(docker container inspect -f '{{json .Config.Labels}}' kubedok-agent 2>/dev/null)" \
+    || return 1
+  [ -z "$(jq -r '.["com.docker.compose.project"] // empty' <<<"${labels}")" ]
+}
+
 # ── Compose ──────────────────────────────────────────────────────────────────
 # Writes the env file every compose invocation is driven from: install paths,
 # the resolved image digests, and the user's config. Regenerated from the

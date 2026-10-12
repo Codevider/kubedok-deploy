@@ -87,7 +87,11 @@ ok "Release tree removed"
 if [ "${PURGE_DATA}" = "true" ]; then
   log "Deleting data"
   docker volume rm kubedok_postgres_data >/dev/null 2>&1 || true
-  docker volume rm kubedok_agent_state kubedok_agent_wg >/dev/null 2>&1 || true
+  # The agent's, by the names agent.env gives them when agent-update.sh took
+  # over an agent the Kubedok UI's command started.
+  agent_state_volume="$(sed -n 's/^KUBEDOK_AGENT_STATE_VOLUME=//p' "${KUBEDOK_AGENT_ROOT}/agent.env" 2>/dev/null | tail -n1 || true)"
+  agent_wg_volume="$(sed -n 's/^KUBEDOK_AGENT_WG_VOLUME=//p' "${KUBEDOK_AGENT_ROOT}/agent.env" 2>/dev/null | tail -n1 || true)"
+  docker volume rm "${agent_state_volume:-kubedok_agent_state}" "${agent_wg_volume:-kubedok_agent_wg}" >/dev/null 2>&1 || true
   rm -rf "${KUBEDOK_SECRETS_DIR}" "${KUBEDOK_BACKUPS_DIR}" "${KUBEDOK_TLS_DIR}" "${KUBEDOK_CONFIG_DIR}"
   rm -rf "${KUBEDOK_ROOT}"
   ok "All data deleted"

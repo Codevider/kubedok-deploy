@@ -104,7 +104,13 @@ sudo kbd config unset LOG_LEVEL   # back to the default
 
 The host and TLS mode change with a `setup.sh` re-run, and the release with
 `kbd update`. An agent keeps its settings in `/opt/kubedok-agent/agent.env`:
-edit it there, then run `kbd restart agent`.
+edit it there, then run `kbd restart agent`, or on a host without the control
+plane:
+
+```bash
+sudo docker compose --env-file /opt/kubedok-agent/agent.env \
+  -f /opt/kubedok-agent/docker-compose.yml up -d
+```
 
 Each release installs its own copy of the scripts, `update.sh` and `kbd`
 included, in `/opt/kubedok/releases/<version>/scripts/`, and `current` points
@@ -128,7 +134,23 @@ On the control-plane host the agent is already installed alongside everything
 else, so use `sudo kbd agent-install --token <token>` there instead.
 
 Agents update independently of the control plane, so updating Kubedok does
-not restart workloads everywhere at once.
+not restart workloads everywhere at once. To update one, from the clone:
+
+```bash
+sudo ./scripts/agent-update.sh --check  # is there an update?
+sudo ./scripts/agent-update.sh          # apply it
+```
+
+It installs the agent the control plane's release ships; `--release X.Y.Z`
+picks another. On the control-plane host, run `sudo kbd agent-update`.
+
+**Register host** in the Kubedok UI gives a `docker run` command instead,
+which needs nothing on the host but Docker. An agent started that way has no
+`/opt/kubedok-agent`, and the first update takes it over: the settings it was
+started with move to `agent.env`, and Compose runs it from then on, on the
+volumes it already has, so it stays the same host. If the new agent does not
+start, the original container comes back as it was. `--check` says when an
+update would take the agent over, and what would stop it.
 
 ## Layout
 
@@ -165,6 +187,7 @@ channels/
   stable.json               Points at the current stable release.
 tests/
   integration.sh            End-to-end test of all of the above.
+  agent-update.sh           Agent updates, an agent the UI started included.
   cert-probe.sh             TLS paths through the real nginx image.
 ```
 
@@ -275,6 +298,16 @@ Two synthetic releases are pushed to a throwaway local registry so the
 manifests carry genuine digests, exactly like production, and they are served
 over `file://` so the test needs no network. It requires the four `:dev`
 images, which are built from the application repository.
+
+```bash
+./tests/agent-update.sh
+```
+
+Updates a stand-in agent started the way the Kubedok UI's command starts one.
+The takeover has to keep its volumes and settings, put the original back when
+the new agent fails, and refuse what it cannot carry over before changing
+anything. Afterwards the agent has to update like one `agent-install.sh` set
+up. It needs no images from the application repository.
 
 ```bash
 ./tests/cert-probe.sh

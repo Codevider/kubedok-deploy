@@ -23,6 +23,13 @@ services:
       KUBEDOK_STATE_FILE: /var/lib/kubedok-agent/agent-state.json
       KUBEDOK_SYNC_INTERVAL_SECS: ${KUBEDOK_SYNC_INTERVAL_SECS:-15}
       RUST_LOG: ${KUBEDOK_AGENT_LOG:-kubedok_agent=info}
+      # Passed when agent.env sets them. Left out, the agent's defaults apply.
+      KUBEDOK_OVERLAY_ENDPOINT:
+      KUBEDOK_OVERLAY_PUBLIC_IP:
+      KUBEDOK_OVERLAY_LISTEN_PORT:
+      KUBEDOK_OVERLAY_ENABLED:
+      KUBEDOK_DNS_UPSTREAM:
+      KUBEDOK_DNS_FORWARDER_FALLBACK_ANY:
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
       - agent_state:/var/lib/kubedok-agent
@@ -30,8 +37,15 @@ services:
     stop_grace_period: 30s
     restart: unless-stopped
 
+# An agent started by the docker run command from Register host in the
+# Kubedok UI has volumes of other names. When agent-update.sh takes it over,
+# agent.env names them, and marks them external, since Compose did not make
+# them. They have to stay: load balancers bind-mount files from the state
+# volume by their path on the host, and that path holds the volume's name.
 volumes:
   agent_state:
-    name: kubedok_agent_state
+    name: ${KUBEDOK_AGENT_STATE_VOLUME:-kubedok_agent_state}
+    external: ${KUBEDOK_AGENT_VOLUMES_EXTERNAL:-false}
   agent_wg:
-    name: kubedok_agent_wg
+    name: ${KUBEDOK_AGENT_WG_VOLUME:-kubedok_agent_wg}
+    external: ${KUBEDOK_AGENT_VOLUMES_EXTERNAL:-false}

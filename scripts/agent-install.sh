@@ -41,6 +41,12 @@ done
 require_root
 require_cmd docker curl jq
 
+# The docker run command from Register host in the Kubedok UI starts the agent
+# without Compose, under the container name this one would take.
+if agent_started_by_docker_run; then
+  die "An agent already runs on this host: kubedok-agent, started by the docker run command from the Kubedok UI. Update it with agent-update.sh, which moves it under ${AGENT_ROOT}."
+fi
+
 # Inherit control-plane settings when one is installed here.
 if [ -f "${KUBEDOK_CONFIG_FILE}" ]; then
   load_config
