@@ -1,17 +1,17 @@
 {
   "schemaVersion": 1,
   "release": "1.4.13",
-  "publishedAt": "2026-10-12T08:08:56Z",
-  "gitRevision": "67bf8fc50e561a7dfad65a6494c7fc0c66e8eddb",
+  "publishedAt": "2026-10-12T08:21:45Z",
+  "gitRevision": "baa7cdee22c10563bde0ad7bf6e09f49fb12cd46",
   "images": {
     "server": "approxx/kubedok-server@sha256:e44533a460b68aa7809e56a1b4339e4289232fa048a010c2ffaecbe1c884b35a",
-    "nginx": "approxx/kubedok-nginx@sha256:0534a1da5e78b1b0a228dea958259ee9adc449d0f0b51390610ff3831d4bb0ac",
+    "nginx": "approxx/kubedok-nginx@sha256:d493b7b9bc7e95c0df61fbb8aa11c4018b9531042c881445fdaaf5a79023b398",
     "postgres": "approxx/kubedok-postgres@sha256:63ab4f3f7823a488676e3e3434a55658348b646043aa4525428c1fc148ae9666",
     "agent": "approxx/kubedok-agent@sha256:1e4a6b992913823ad961c8e440af23d421ecf45037723494aa063dd7b81a104a"
   },
   "builtFrom": {
     "server": "67bf8fc50e561a7dfad65a6494c7fc0c66e8eddb",
-    "nginx": "67bf8fc50e561a7dfad65a6494c7fc0c66e8eddb",
+    "nginx": "baa7cdee22c10563bde0ad7bf6e09f49fb12cd46",
     "postgres": "4b059d0ec0b8266f11af578916945dd84ddb3d62",
     "agent": "67bf8fc50e561a7dfad65a6494c7fc0c66e8eddb"
   },
