@@ -142,7 +142,11 @@ sudo ./scripts/agent-update.sh          # apply it
 ```
 
 It installs the agent the control plane's release ships; `--release X.Y.Z`
-picks another. On the control-plane host, run `sudo kbd agent-update`.
+picks another. Without `--release` it never moves an agent back: when that
+release ships an older agent than the one installed, it leaves the agent
+alone, so a newer agent installed with `--release` stays until the control
+plane catches up. Name the older release with `--release` to go back on
+purpose. On the control-plane host, run `sudo kbd agent-update`.
 
 **Register host** in the Kubedok UI gives a `docker run` command instead,
 which needs nothing on the host but Docker. An agent started that way has no

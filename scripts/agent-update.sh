@@ -6,6 +6,10 @@
 #   agent-update.sh --release 1.3.0  # to the agent release 1.3.0 ships
 #   agent-update.sh --check
 #
+# Without --release it never moves the agent back: when the release it matches
+# ships an older agent than the one installed, it leaves the agent alone. Name
+# that release with --release to go back on purpose.
+#
 # Agents update separately on purpose: a control-plane update must not restart
 # workloads on every managed host at once. The agent has a version of its
 # own (agentVersion in the release manifest); the compatibility floor is
@@ -24,13 +28,15 @@ AGENT_ROOT="${KUBEDOK_AGENT_ROOT:-/opt/kubedok-agent}"
 AGENT_ENV="${AGENT_ROOT}/agent.env"
 AGENT_COMPOSE="${AGENT_ROOT}/docker-compose.yml"
 RELEASE_REF=""
+# Whether --release named the release: only then may the agent move back.
+RELEASE_GIVEN=false
 CHECK_ONLY=false
 
 while [ $# -gt 0 ]; do
   case "$1" in
-    --release) RELEASE_REF="$2"; shift 2 ;;
+    --release) RELEASE_REF="$2"; RELEASE_GIVEN=true; shift 2 ;;
     --check) CHECK_ONLY=true; shift ;;
-    -h|--help) sed -n '2,16p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) die "Unknown option: $1" ;;
   esac
 done
@@ -325,6 +331,21 @@ if [ "${TAKEOVER}" = true ]; then
 elif [ "${CURRENT_IMAGE}" = "${NEW_IMAGE}" ]; then
   ok "Already on agent ${NEW_AGENT}. Nothing to do."
   exit 0
+fi
+
+# An agent newer than the one the matched release ships was put there on
+# purpose: by --release, or from a stable channel ahead of the control plane.
+# Moved back by a plain run, it would lose whatever it was installed for
+# without anyone asking, so only a release named with --release moves it back.
+if is_semver "${CURRENT_AGENT}" && is_semver "${NEW_AGENT}" \
+   && ! semver_ge "${NEW_AGENT}" "${CURRENT_AGENT}"; then
+  if [ "${RELEASE_GIVEN}" != true ]; then
+    ok "Agent ${CURRENT_AGENT} is newer than ${NEW_AGENT}, which release ${NEW_RELEASE} ships. Nothing to do."
+    printf '  To move it back to %s on purpose, run with --release %s.\n' "${NEW_AGENT}" "${NEW_RELEASE}"
+    printf '\n'
+    exit 0
+  fi
+  warn "Agent ${NEW_AGENT} is older than the installed ${CURRENT_AGENT}: this moves the agent back."
 fi
 
 if [ "${TAKEOVER}" = true ] && [ ${#TAKEOVER_BLOCKERS[@]} -gt 0 ]; then

@@ -9,7 +9,8 @@
 # update must take the agent over without losing its volumes or settings, put
 # the original back as it was when the new agent fails, refuse what it cannot
 # carry over before changing anything, and leave an agent that later updates
-# treat like one agent-install.sh set up.
+# treat like one agent-install.sh set up. A plain run must never move an agent
+# back to an older release's; only --release may.
 #
 # The stand-in only waits. It is built as agent 1.0.0, 1.0.1, and a 1.0.2 that
 # exits at once, and pushed to a throwaway registry so the manifests name
@@ -376,6 +377,38 @@ if env_file_line 'KUBEDOK_AGENT_RELEASE=1.0.0'; then pass 'agent.env records age
 
 run "${UPDATE} --release 1.0.0"
 assert_said 'Already on agent 1.0.0' 'a second run finds nothing to do'
+
+# ═══════════════════════════════════════════════════════════════════════════
+step 'TEST 7 — a plain run never moves the agent back'
+
+run "${UPDATE} --release 1.0.1"
+assert_succeeded 'agent-update.sh to agent 1.0.1 succeeds'
+assert_eq "$(digest_of 1.0.1)" "$(agent_field '{{.Config.Image}}')" 'it runs agent 1.0.1'
+NEWER="$(agent_id)"
+
+# The release a plain run matches now ships the older agent, as a control
+# plane still on an older release does.
+jq -n '{schemaVersion:1, channel:"stable", release:"1.0.0",
+        manifest:"releases/1.0.0.json", updatedAt:"2026-01-01T00:00:00Z"}' \
+  > "${SERVE_DIR}/channels/stable.json"
+
+run "${UPDATE} --check"
+assert_succeeded 'agent-update.sh --check succeeds'
+assert_said 'Agent 1.0.1 is newer than 1.0.0' 'it finds the installed agent newer'
+assert_said 'run with --release 1.0.0' 'and says how to move it back on purpose'
+
+run "${UPDATE}"
+assert_succeeded 'agent-update.sh succeeds'
+assert_said 'Nothing to do' 'and does nothing'
+assert_eq "${NEWER}" "$(agent_id)" 'the agent is the same container'
+assert_eq "$(digest_of 1.0.1)" "$(agent_field '{{.Config.Image}}')" 'still on agent 1.0.1'
+if env_file_line 'KUBEDOK_AGENT_RELEASE=1.0.1'; then pass 'agent.env still records agent 1.0.1'; else fails 'agent.env no longer records agent 1.0.1'; fi
+
+run "${UPDATE} --release 1.0.0"
+assert_succeeded 'agent-update.sh --release 1.0.0 succeeds'
+assert_said 'this moves the agent back' 'it warns that the agent moves back'
+assert_said 'Agent updated to 1.0.0' 'and reports agent 1.0.0'
+assert_eq "$(digest_of 1.0.0)" "$(agent_field '{{.Config.Image}}')" 'it runs agent 1.0.0'
 
 # ═══════════════════════════════════════════════════════════════════════════
 printf '\n%s passed, %s failed\n' "${PASS}" "${FAIL}"
